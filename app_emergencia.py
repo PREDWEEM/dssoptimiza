@@ -1260,17 +1260,18 @@ try:
 except Exception as e:
     st.warning(f"No fue posible actualizar el Gráfico 1 con el mejor escenario: {e}")
     
-    # Pintar bandas del mejor
-    if 'fig' in locals() and len(df_best) and paint_best:
-        try:
-            for _, r in df_best.iterrows():
-                x0 = pd.to_datetime(r["Inicio"]); x1 = pd.to_datetime(r["Fin"])
-                fig.add_vrect(x0=x0, x1=x1, line_width=0, fillcolor="rgba(30,144,255,0.18)", opacity=0.18)
-                fig.add_annotation(x=x0+(x1-x0)/2, y=0.86, xref="x", yref="paper",
-                                   text=r["Intervención"], showarrow=False, bgcolor="rgba(30,144,255,0.85)",
-                                   bordercolor="rgba(0,0,0,0.2)", borderwidth=1, borderpad=2)
-            st.plotly_chart(fig, use_container_width=True)
-        except Exception:
-            pass
-else:
-    st.info("Aún no hay resultados para mostrar.")
+   # Pintar bandas del mejor escenario en el Gráfico 1 (si corresponde)
+if 'fig' in locals() and paint_best and ('best' in locals()) and best and len(best.get("schedule", [])) > 0:
+    try:
+        for a in best["schedule"]:
+            x0 = pd.to_datetime(a["date"])
+            x1 = x0 + pd.Timedelta(days=int(a["days"]))
+            fig.add_vrect(x0=x0, x1=x1, line_width=0, fillcolor="rgba(30,144,255,0.18)", opacity=0.18)
+            fig.add_annotation(
+                x=x0 + (x1 - x0)/2, y=0.86, xref="x", yref="paper",
+                text=a["kind"], showarrow=False, bgcolor="rgba(30,144,255,0.85)",
+                bordercolor="rgba(0,0,0,0.2)", borderwidth=1, borderpad=2
+            )
+        st.plotly_chart(fig, use_container_width=True)
+    except Exception as e:
+        st.warning(f"No fue posible pintar el cronograma óptimo en el Gráfico 1: {e}")
