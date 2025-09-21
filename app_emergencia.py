@@ -824,7 +824,6 @@ def neighbors_state(current):
             sch2 = []
             for a in sch:
                 if a["kind"] == "pre_selR" and len(pre_d2):
-                    # elegir fecha más cercana
                     best = min(pre_d2, key=lambda d: abs((pd.to_datetime(a["date"]) - d).days))
                     sch2.append(act_pre_selR(best, a["days"], a["eff"]))
                 elif a["kind"] == "post_selR" and len(post_d2):
@@ -840,7 +839,6 @@ def neighbors_state(current):
     if use_pre_selR_opt and len(pre_d):
         sch2 = [x for x in sch if x["kind"]!="pre_selR"]
         if any(x["kind"]=="pre_selR" for x in sch):
-            # mover fecha o duración o eliminar
             action = random.choice(["date","dur","drop"])
             if action=="date":
                 d = random.choice(pre_d); R = [x for x in sch if x["kind"]=="pre_selR"][0]["days"]
@@ -851,7 +849,6 @@ def neighbors_state(current):
             else:
                 moves.append((sd, sch2))
         else:
-            # agregar
             d = random.choice(pre_d); R = random.choice(res_days)
             moves.append((sd, sch+[act_pre_selR(d, R, ef_pre_selR_opt)]))
     if use_post_selR_opt and len(post_d):
@@ -959,7 +956,7 @@ else:
                             if cand_loss < best_eval["loss_pct"]:
                                 best, best_eval = cand, cand_eval
                         else:
-                            # aún registro el candidato evaluado
+                            # registro el candidato evaluado aunque no se acepte
                             results.append(cand_eval)
                     # enfriamiento
                     T = T * float(sa_cooling)
@@ -978,66 +975,63 @@ else:
 
 # Reporte ---------------------------------------------------------------
 if results:
-    # Si se detuvo antes
-    if optimizer != "Recocido simulado":
-        # En SA el conteo de evaluaciones no representa "total del universo", por eso omito leyenda.
-        pass
-    if len(results) > 0:
-        results_sorted = sorted(results, key=lambda r: (r["loss_pct"], r["x3"]))
-        best = results_sorted[0]
-        st.subheader("🏆 Mejor escenario")
-        st.markdown(
-            f"**Siembra:** **{best['sow']}**  \n"
-            f"**Pérdida estimada:** **{best['loss_pct']:.2f}%**  \n"
-            f"**x₂:** {best['x2']:.1f} · **x₃:** {best['x3']:.1f} pl·m²  \n"
-            f"**A2_sup:** {best['A2_sup']:.1f} · **A2_ctrl:** {best['A2_ctrl']:.1f} pl·m²"
-        )
+    # Orden: menor pérdida, luego menor x3
+    results_sorted = sorted(results, key=lambda r: (r["loss_pct"], r["x3"]))
+    best = results_sorted[0]
+    st.subheader("🏆 Mejor escenario")
+    st.markdown(
+        f"**Siembra:** **{best['sow']}**  \n"
+        f"**Pérdida estimada:** **{best['loss_pct']:.2f}%**  \n"
+        f"**x₂:** {best['x2']:.1f} · **x₃:** {best['x3']:.1f} pl·m²  \n"
+        f"**A2_sup:** {best['A2_sup']:.1f} · **A2_ctrl:** {best['A2_ctrl']:.1f} pl·m²"
+    )
 
-        def schedule_df(sch):
-            rows=[]
-            for a in sch:
-                ini = pd.to_datetime(a["date"]); fin = ini + pd.Timedelta(days=int(a["days"]))
-                rows.append({
-                    "Intervención": a["kind"],
-                    "Inicio": str(ini.date()),
-                    "Fin": str(fin.date()),
-                    "Duración (d)": int(a["days"]),
-                    "Eficiencia (%)": int(a["eff"]),
-                    "Estados": ",".join(a["states"])
-                })
-            return pd.DataFrame(rows)
+    def schedule_df(sch):
+        rows=[]
+        for a in sch:
+            ini = pd.to_datetime(a["date"]); fin = ini + pd.Timedelta(days=int(a["days"]))
+            rows.append({
+                "Intervención": a["kind"],
+                "Inicio": str(ini.date()),
+                "Fin": str(fin.date()),
+                "Duración (d)": int(a["days"]),
+                "Eficiencia (%)": int(a["eff"]),
+                "Estados": ",".join(a["states"])
+            })
+        return pd.DataFrame(rows)
 
-        df_best = schedule_df(best["schedule"])
-        if len(df_best):
-            st.dataframe(df_best, use_container_width=True)
-            st.download_button("Descargar mejor cronograma (CSV)", df_best.to_csv(index=False).encode("utf-8"),
-                               "mejor_cronograma.csv", "text/csv", key="dl_mejor_crono")
+    df_best = schedule_df(best["schedule"])
+    if len(df_best):
+        st.dataframe(df_best, use_container_width=True)
+        st.download_button("Descargar mejor cronograma (CSV)", df_best.to_csv(index=False).encode("utf-8"),
+                           "mejor_cronograma.csv", "text/csv", key="dl_mejor_crono")
 
-        # Top-k
-        def row_of(r):
-            key = " | ".join([f"{a['kind']}@{a['date']}+{int(a['days'])}d({int(a['eff'])}%)" for a in r["schedule"]]) if r["schedule"] else "Sin manejo"
-            return [str(r["sow"]), key, r["loss_pct"], r["x2"], r["x3"], r["A2_sup"], r["A2_ctrl"]]
-        top_rows = [row_of(r) for r in results_sorted[:int(top_k_show)]]
-        df_top = pd.DataFrame(top_rows, columns=["Siembra", "Escenario", "Pérdida (%)", "x₂", "x₃", "A2_sup", "A2_ctrl"])
-        if len(results) < (len(sow_candidates) if optimizer=="Grid (combinatorio)" else int(max_evals)):
-            st.caption("⚠️ Puede haber resultados parciales (detenido o muestreo).")
-        st.subheader(f"Top-{int(top_k_show)} escenarios")
-        st.dataframe(df_top, use_container_width=True)
-        st.download_button("Descargar Top-k (CSV)", df_top.to_csv(index=False).encode("utf-8"),
-                           "topk_siembra_cronogramas.csv", "text/csv", key="dl_topk")
+    # Top-k
+    def row_of(r):
+        key = " | ".join([f"{a['kind']}@{a['date']}+{int(a['days'])}d({int(a['eff'])}%)" for a in r["schedule"]]) if r["schedule"] else "Sin manejo"
+        return [str(r["sow"]), key, r["loss_pct"], r["x2"], r["x3"], r["A2_sup"], r["A2_ctrl"]]
+    top_k_show = int(top_k_show)
+    top_rows = [row_of(r) for r in results_sorted[:top_k_show]]
+    df_top = pd.DataFrame(top_rows, columns=["Siembra", "Escenario", "Pérdida (%)", "x₂", "x₃", "A2_sup", "A2_ctrl"])
+    if optimizer == "Grid (combinatorio)":
+        st.caption("⚠️ Si se muestreó por límite de evaluaciones o cortaste, pueden ser resultados parciales.")
+    st.subheader(f"Top-{top_k_show} escenarios")
+    st.dataframe(df_top, use_container_width=True)
+    st.download_button("Descargar Top-k (CSV)", df_top.to_csv(index=False).encode("utf-8"),
+                       "topk_siembra_cronogramas.csv", "text/csv", key="dl_topk")
 
-        # Pintar bandas del mejor
-        if paint_best and 'fig' in locals() and len(df_best):
-            try:
-                for _, r in df_best.iterrows():
-                    x0 = pd.to_datetime(r["Inicio"]); x1 = pd.to_datetime(r["Fin"])
-                    fig.add_vrect(x0=x0, x1=x1, line_width=0, fillcolor="rgba(30,144,255,0.18)", opacity=0.18)
-                    fig.add_annotation(x=x0+(x1-x0)/2, y=0.86, xref="x", yref="paper",
-                                       text=r["Intervención"], showarrow=False, bgcolor="rgba(30,144,255,0.85)",
-                                       bordercolor="rgba(0,0,0,0.2)", borderwidth=1, borderpad=2)
-                st.plotly_chart(fig, use_container_width=True)
-            except Exception:
-                pass
+    # Pintar bandas del mejor
+    if 'fig' in locals() and len(df_best) and paint_best:
+        try:
+            for _, r in df_best.iterrows():
+                x0 = pd.to_datetime(r["Inicio"]); x1 = pd.to_datetime(r["Fin"])
+                fig.add_vrect(x0=x0, x1=x1, line_width=0, fillcolor="rgba(30,144,255,0.18)", opacity=0.18)
+                fig.add_annotation(x=x0+(x1-x0)/2, y=0.86, xref="x", yref="paper",
+                                   text=r["Intervención"], showarrow=False, bgcolor="rgba(30,144,255,0.85)",
+                                   bordercolor="rgba(0,0,0,0.2)", borderwidth=1, borderpad=2)
+            st.plotly_chart(fig, use_container_width=True)
+        except Exception:
+            pass
 else:
     st.info("Aún no hay resultados para mostrar.")
 
