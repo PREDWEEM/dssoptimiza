@@ -691,7 +691,7 @@ with st.sidebar:
     optimizer = st.selectbox("Optimizador", ["Grid (combinatorio)", "Búsqueda aleatoria", "Recocido simulado"], index=0)
 
     # Límites y salida
-    max_evals   = st.number_input("Máx. evaluaciones", 100, 20000, 4000, 100)
+    max_evals   = st.number_input("Máx. evaluaciones", 100, 100000, 4000, 100)
     top_k_show  = st.number_input("Top-k a mostrar", 1, 20, 5, 1)
     paint_best  = st.checkbox("Pintar bandas del mejor escenario en el Gráfico 1", value=True)
 
