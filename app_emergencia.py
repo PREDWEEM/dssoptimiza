@@ -1125,4 +1125,142 @@ if results:
             pass
 else:
     st.info("Aún no hay resultados para mostrar.")
+# =================== Figuras 2 y 3 basadas en el MEJOR escenario ===================
+try:
+    # 1) Recomputar entorno para la siembra óptima
+    sow_best = pd.to_datetime(best["sow"]).date()
+    env = recompute_for_sow(sow_best)
+    if env is None:
+        st.info("No se pudieron recomputar series para el mejor escenario.")
+    else:
+        ts_b        = env["ts"]
+        fechas_d_b  = env["fechas_d"]
+        mask_since_b= env["mask_since"]
+        factor_area = env["factor_area"]
+        auc_cruda_b = env["auc_cruda"]
+        S1_pl, S2_pl, S3_pl, S4_pl = env["S_pl"]
+        sup_cap_b   = env["sup_cap"]
+
+        # 2) Construir control por estado según el cronograma del mejor escenario
+        c1 = np.ones_like(fechas_d_b, float)
+        c2 = np.ones_like(fechas_d_b, float)
+        c3 = np.ones_like(fechas_d_b, float)
+        c4 = np.ones_like(fechas_d_b, float)
+
+        def _apply(weights, eff, states):
+            if eff <= 0 or not states: return
+            reduc = np.clip(1.0 - (eff/100.0)*np.clip(weights,0.0,1.0), 0.0, 1.0)
+            if "S1" in states: np.multiply(c1, reduc, out=c1)
+            if "S2" in states: np.multiply(c2, reduc, out=c2)
+            if "S3" in states: np.multiply(c3, reduc, out=c3)
+            if "S4" in states: np.multiply(c4, reduc, out=c4)
+
+        for a in best["schedule"]:
+            ini = pd.to_datetime(a["date"]).date()
+            fin = (pd.to_datetime(a["date"]) + pd.Timedelta(days=int(a["days"]))).date()
+            w = ((fechas_d_b >= ini) & (fechas_d_b < fin)).astype(float)
+            _apply(w, a["eff"], a["states"])
+
+        # 3) Reescalado proporcional por estado (cap diario consistente)
+        total_ctrl_daily = (S1_pl*c1 + S2_pl*c2 + S3_pl*c3 + S4_pl*c4)
+        eps = 1e-12
+        scale = np.where(total_ctrl_daily > eps,
+                         np.minimum(1.0, sup_cap_b / total_ctrl_daily),
+                         0.0)
+        S1_ctrl_cap_b = S1_pl * c1 * scale
+        S2_ctrl_cap_b = S2_pl * c2 * scale
+        S3_ctrl_cap_b = S3_pl * c3 * scale
+        S4_ctrl_cap_b = S4_pl * c4 * scale
+        plantas_ctrl_cap_b = S1_ctrl_cap_b + S2_ctrl_cap_b + S3_ctrl_cap_b + S4_ctrl_cap_b
+
+        # 4) Métricas x2/x3 y pérdidas del mejor escenario
+        def _loss_pct(x): 
+            x = float(x); 
+            return 0.375 * x / (1.0 + (0.375 * x / 76.639))
+        X2_b = float(np.nansum(sup_cap_b[mask_since_b]))
+        X3_b = float(np.nansum(plantas_ctrl_cap_b[mask_since_b]))
+        loss_x2_b = _loss_pct(X2_b)
+        loss_x3_b = _loss_pct(X3_b)
+
+        # ================= Figura 2 — Mejor escenario =================
+        st.subheader(f"Figura 2 — Pérdida (%) vs x · Mejor escenario (siembra {sow_best})")
+        x_curve = np.linspace(0.0, MAX_PLANTS_CAP, 400)
+        y_curve = 0.375 * x_curve / (1.0 + (0.375 * x_curve / 76.639))
+
+        fig2_best = go.Figure()
+        fig2_best.add_trace(go.Scatter(
+            x=x_curve, y=y_curve, mode="lines", name="Modelo pérdida % vs x",
+            hovertemplate="x = %{x:.1f} pl·m²<br>Pérdida: %{y:.2f}%<extra></extra>"
+        ))
+        fig2_best.add_trace(go.Scatter(
+            x=[X2_b], y=[loss_x2_b], mode="markers+text", name="x₂: sin control (cap)",
+            text=[f"x₂ = {X2_b:.1f}"], textposition="top center",
+            marker=dict(size=10, symbol="diamond"),
+            hovertemplate="x₂ = %{x:.1f} pl·m²<br>Pérdida: %{y:.2f}%<extra></extra>"
+        ))
+        fig2_best.add_trace(go.Scatter(
+            x=[X3_b], y=[loss_x3_b], mode="markers+text", name="x₃: con control (cap)",
+            text=[f"x₃ = {X3_b:.1f}"], textposition="top right",
+            marker=dict(size=11, symbol="star"),
+            hovertemplate="x₃ = %{x:.1f} pl·m²<br>Pérdida: %{y:.2f}%<extra></extra>"
+        ))
+        fig2_best.update_layout(
+            title=f"Pérdida de rendimiento (%) vs. x (cap A2={int(MAX_PLANTS_CAP)})",
+            xaxis_title="x (pl·m²) — integral de aportes (cohortes, cap) desde siembra",
+            yaxis_title="Pérdida de rendimiento (%)",
+            margin=dict(l=10, r=10, t=40, b=10)
+        )
+        st.plotly_chart(fig2_best, use_container_width=True)
+
+        # ================= Figura 3 — Mejor escenario (donut en PC) =================
+        # PC del año de la siembra óptima
+        year_pc_best = sow_best.year
+        PC_START_best = pd.to_datetime(f"{year_pc_best}-09-11")
+        PC_END_best   = pd.to_datetime(f"{year_pc_best}-11-15")
+        st.subheader(f"Figura 3 — Composición porcentual por estado en el PC (siembra {sow_best})")
+        st.caption(f"Ventana PC: {PC_START_best.date()} → {PC_END_best.date()}")
+
+        mask_pc_days_best = (ts_b >= PC_START_best) & (ts_b <= PC_END_best)
+        mspc_b = (mask_since_b & mask_pc_days_best.to_numpy())
+
+        a_S1 = float(np.nansum(S1_ctrl_cap_b[mspc_b]))
+        a_S2 = float(np.nansum(S2_ctrl_cap_b[mspc_b]))
+        a_S3 = float(np.nansum(S3_ctrl_cap_b[mspc_b]))
+        a_S4 = float(np.nansum(S4_ctrl_cap_b[mspc_b]))
+        tot_b = a_S1 + a_S2 + a_S3 + a_S4
+
+        if np.isfinite(tot_b) and tot_b > 0:
+            labels = ["S1 (FC=0.0)", "S2 (FC=0.3)", "S3 (FC=0.6)", "S4 (FC=1.0)"]
+            pct_b = 100.0 * np.array([a_S1, a_S2, a_S3, a_S4], float) / tot_b
+
+            st.markdown(f"**Total (S1–S4) en PC:** **{tot_b:,.1f}** pl·m²")
+
+            df_pc_best = (pd.DataFrame({"Estado": labels, "% del total PC": pct_b})
+                            .sort_values("% del total PC", ascending=False)
+                            .reset_index(drop=True))
+            st.dataframe(df_pc_best, use_container_width=True)
+            st.download_button(
+                "Descargar composición (mejor) en PC (CSV)",
+                df_pc_best.to_csv(index=False).encode("utf-8"),
+                "composicion_PC_mejor_escenario.csv",
+                "text/csv",
+                key="dl_pct_estados_pc_best"
+            )
+
+            fig3_best = go.Figure(data=[go.Pie(
+                labels=labels,
+                values=pct_b,
+                hole=0.5,
+                textinfo="label+percent",
+                hovertemplate="%{label}<br>%: %{value:.2f}%<extra></extra>"
+            )])
+            fig3_best.update_layout(
+                title="Composición porcentual por estado en el Periodo Crítico (mejor escenario)",
+                margin=dict(l=10, r=10, t=50, b=10)
+            )
+            st.plotly_chart(fig3_best, use_container_width=True)
+        else:
+            st.info("En la ventana del PC del mejor escenario, el total es 0 o no finito (no se puede armar el donut).")
+except Exception as e:
+    st.warning(f"No fue posible dibujar las Figuras 2 y 3 del mejor escenario: {e}")
 
