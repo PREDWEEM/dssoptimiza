@@ -819,21 +819,43 @@ else:
         ef_pre_selR_opt  = st.slider("Eficiencia pre residual (%)", 0, 100, 70, 1)  if use_pre_selR_opt else 0
         ef_post_selR_opt = st.slider("Eficiencia post residual (%)", 0, 100, 70, 1) if use_post_selR_opt else 0
         ef_post_gram_opt = st.slider("Eficiencia graminicida post (%)", 0, 100, 65, 1) if use_post_gram_opt else 0
+        
+     # --- Ventanas y resolución (CORREGIDO) ---
+st.subheader("Ventanas y resolución")
 
-        st.subheader("Ventanas/Resolución")
-        # pre: puede aplicarse hasta X días antes de siembra (inclusive el día de siembra)
-        pre_days_back  = st.number_input("Pre residual: días antes de siembra", 0, 120, 30, 1)
-        pre_step_days  = st.number_input("Paso fechas PRE (días)", 1, 30, 7, 1)
-        # post: desde siembra hasta siembra+Y
-        post_days_fw   = st.number_input("Post: días después de siembra", 0, 180, 60, 1)
-        post_step_days = st.number_input("Paso fechas POST (días)", 1, 30, 7, 1)
-        # residualidades
-        res_min, res_max, res_step = st.slider("Residualidad (min, max, paso) [días]", 15, 120, (30, 60), 5)
+      # PRE: puede aplicarse hasta X días antes de siembra (incluye siembra)
+pre_days_back  = st.number_input("Pre residual: días antes de siembra", 0, 120, 30, 1)
+pre_step_days  = st.number_input("Paso fechas PRE (días)", 1, 30, 7, 1)
 
-        st.subheader("Límites y salida")
-        max_evals   = st.number_input("Máx. combinaciones", 100, 20000, 4000, 100)
-        top_k_show  = st.number_input("Top-k a mostrar", 1, 20, 5, 1)
-        paint_best  = st.checkbox("Pintar bandas del mejor escenario en el Gráfico 1", value=True)
+     # POST: desde siembra hasta siembra+Y
+post_days_fw   = st.number_input("Post: días después de siembra", 0, 180, 60, 1)
+post_step_days = st.number_input("Paso fechas POST (días)", 1, 30, 7, 1)
+
+   # Residualidad: rango (min–max) y paso por separado
+res_min, res_max = st.slider(
+    "Residualidad (min–max) [días]",
+    min_value=15, max_value=120,
+    value=(30, 60), step=5
+)
+res_step = st.number_input(
+    "Paso de residualidad (días)",
+    min_value=1, max_value=30, value=5, step=1,
+    help="Se generan duraciones: min, min+paso, …, hasta ≤max."
+)
+
+   # Validaciones rápidas
+if res_min >= res_max:
+    st.error("Residualidad: el mínimo debe ser menor que el máximo.")
+    st.stop()
+if res_step <= 0:
+    st.error("El paso de residualidad debe ser > 0.")
+    st.stop()
+
+   # Vector de duraciones a evaluar (incluye max si el paso no cae justo)
+res_days = list(range(int(res_min), int(res_max) + 1, int(res_step)))
+if int(res_max) not in res_days:
+    res_days.append(int(res_max))
+
 
     # Validaciones básicas
     if sow_search_from > sow_search_to:
