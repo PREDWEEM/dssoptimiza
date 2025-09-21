@@ -9,13 +9,13 @@
 # - x = ∑_estados ∫ (pl·m²·día⁻¹_ctrl_estado) dt, desde siembra (t=0)
 # - Selectivo preemergente (NR y Residual) por defecto actúa sobre S1–S4 (editable), PERO:
 #   ▸ **Selectivo + residual (pre)** aplica OBLIGATORIAMENTE a **S1–S4** durante todo su período de residualidad.
-# - Graminicida post = día 0 + 10 días hacia adelante (11 días totales)
+# - Graminicida post = día 0 + 10 días hacia adelante (11 días totales)  ← NO TOCAR
 # - ▶ Salidas agregadas principales en **pl·m²·sem⁻¹** (semanas etiquetadas en LUNES). Cap A2 estricto (único).
 # - ▶ Reescalado proporcional por estado para conservar pesos relativos bajo cap A2.
 # - ▶ Eje derecho del Gráfico 1 fijo en **0–100** para plantas·m²·semana
 # - ▶ Eliminado el gráfico de barras 100% apiladas
 # - ▶ Selector de escenario de infestación: **62 / 125 / 250 pl·m²**
-# - ▶ OPTIMIZACIÓN restringida a: fecha de siembra, pre_residual, post_residual, post_graminicida
+# - ▶ OPTIMIZACIÓN restringida a: fecha de siembra, pre_residual, post_residual (≥ siembra+7), post_graminicida
 
 import io, re, json, math, datetime as dt
 import numpy as np
@@ -46,7 +46,7 @@ st.caption(
 
 # ========================== Constantes y helpers ==========================
 NR_DAYS_DEFAULT = 10
-POST_GRAM_FORWARD_DAYS = 11
+POST_GRAM_FORWARD_DAYS = 11  # NO TOCAR
 
 def safe_nanmax(arr, fallback=0.0):
     try:
@@ -333,8 +333,12 @@ with st.sidebar:
     post_gram_date = st.date_input("Fecha graminicida (post)", value=max(min_date, sow_date), min_value=min_date, max_value=max_date, disabled=not post_gram)
 
     post_selR = st.checkbox("Selectivo + residual (post)", value=False)
+    # *** REGLA: post_selR >= siembra + 7 días (UI) ***
+    post_min_postR = max(min_date, sow_date + timedelta(days=7))
+    post_selR_date = st.date_input("Fecha selectivo + residual (post)",
+                                   value=post_min_postR, min_value=post_min_postR, max_value=max_date,
+                                   disabled=not post_selR)
     post_res_dias = st.slider("Residualidad post (días)", 30, 60, 45, 1, disabled=not post_selR)
-    post_selR_date = st.date_input("Fecha selectivo + residual (post)", value=max(min_date, sow_date), min_value=min_date, max_value=max_date, disabled=not post_selR)
 
 warnings = []
 def check_pre(date_val, name):
@@ -345,7 +349,10 @@ if pre_glifo:  check_pre(pre_glifo_date, "Glifosato (pre)")
 if pre_selNR:  check_pre(pre_selNR_date, "Selectivo no residual (pre)")
 if pre_selR:   check_pre(pre_selR_date, "Selectivo + residual (pre)")
 if post_gram:  check_post(post_gram_date, "Graminicida (post)")
-if post_selR:  check_post(post_selR_date, "Selectivo + residual (post)")
+if post_selR:
+    # Mensaje claro si la UI manual se forzó pero se cambió el rango después
+    if post_selR_date and post_selR_date < sow_date + timedelta(days=7):
+        warnings.append(f"Selectivo + residual (post): debe ser ≥ {sow_date + timedelta(days=7)}.")
 for w in warnings: st.warning(w)
 
 if pre_glifo: add_sched("Pre · glifosato (NSr, 1d)", pre_glifo_date, None, "Barbecho")
@@ -766,7 +773,7 @@ else:
 
 # ==================================================================================
 # ======================= OPTIMIZACIÓN RESTRINGIDA (SOW + 3 TRATOS) ================
-# Variables: fecha de siembra, pre_selR, post_selR, post_gram
+# Variables: fecha de siembra, pre_selR, post_selR (>= siembra+7), post_gram
 # ==================================================================================
 st.markdown("---")
 st.header("🧠 Optimización (siembra + pre residual + post residual + graminicida)")
@@ -784,7 +791,7 @@ with st.sidebar:
 
     st.subheader("Tratamientos a considerar")
     use_pre_selR_opt  = st.checkbox("Incluir pre-siembra + residual", value=True)
-    use_post_selR_opt = st.checkbox("Incluir post + residual", value=True)
+    use_post_selR_opt = st.checkbox("Incluir post + residual (≥ siembra + 7 días)", value=True)
     use_post_gram_opt = st.checkbox(f"Incluir graminicida post (+{POST_GRAM_FORWARD_DAYS-1}d)", value=True)
 
     st.subheader("Eficiencias (%)")
@@ -796,11 +803,11 @@ with st.sidebar:
     # PRE: hasta X días antes de siembra
     pre_days_back  = st.number_input("Pre residual: días antes de siembra", 0, 120, 30, 1)
     pre_step_days  = st.number_input("Paso fechas PRE (días)", 1, 30, 7, 1)
-    # POST: desde siembra hasta siembra+Y
-    post_days_fw   = st.number_input("Post: días después de siembra", 0, 180, 60, 1)
+    # POST: desde siembra hasta siembra+Y (pero con mínimo siembra+7 adentro del generador)
+    post_days_fw   = st.number_input("Post: días después de siembra (máximo)", 0, 180, 60, 1)
     post_step_days = st.number_input("Paso fechas POST (días)", 1, 30, 7, 1)
 
-    # Residualidad (CORREGIDO: min–max y paso independiente)
+    # Residualidad (min–max) + paso
     res_min, res_max = st.slider("Residualidad (min–max) [días]", min_value=15, max_value=120, value=(30, 60), step=5)
     res_step = st.number_input("Paso de residualidad (días)", min_value=1, max_value=30, value=5, step=1,
                                help="Se generan duraciones: min, min+paso, …, hasta ≤max.")
@@ -905,6 +912,12 @@ def act_post_gram(date_val, eff):     return {"kind":"post_gram", "date":pd.to_d
 def perdida_rinde_pct_local(x): x = np.asarray(x, float); return 0.375 * x / (1.0 + (0.375 * x / 76.639))
 
 def evaluate(sd: dt.date, schedule: list):
+    # *** REGLA DEFENSIVA: post_selR >= siembra + 7 días ***
+    sow_plus_7 = pd.to_datetime(sd) + pd.Timedelta(days=7)
+    for a in schedule:
+        if a["kind"] == "post_selR" and pd.to_datetime(a["date"]) < sow_plus_7:
+            return None  # escenario inválido
+
     env = recompute_for_sow(sd)
     if env is None:
         return None
@@ -955,6 +968,7 @@ def evaluate(sd: dt.date, schedule: list):
 
 # Construcción del espacio de búsqueda
 sow_candidates = daterange(sow_search_from, sow_search_to, sow_step_days)
+
 def pre_dates_for(sow_d):
     start = sow_d - pd.Timedelta(days=int(pre_days_back))
     cur, out = start, []
@@ -962,9 +976,14 @@ def pre_dates_for(sow_d):
         out.append(cur)
         cur = cur + pd.Timedelta(days=int(pre_step_days))
     return out
+
 def post_dates_for(sow_d):
-    end = sow_d + pd.Timedelta(days=int(post_days_fw))
-    cur, out = sow_d, []
+    # *** REGLA: post_selR >= siembra + 7 días (generador de fechas) ***
+    start = sow_d + pd.Timedelta(days=7)
+    end   = sow_d + pd.Timedelta(days=int(post_days_fw))
+    if end < start:
+        return []
+    cur, out = start, []
     while cur <= end:
         out.append(cur)
         cur = cur + pd.Timedelta(days=int(post_step_days))
@@ -981,7 +1000,7 @@ for sd in sow_candidates:
     if use_post_selR_opt:
         groups.append([act_post_selR(d, R, ef_post_selR_opt) for d in post_dates for R in res_days])
     if use_post_gram_opt:
-        groups.append([act_post_gram(d, ef_post_gram_opt) for d in post_dates])
+        groups.append([act_post_gram(d, ef_post_gram_opt) for d in post_dates])  # graminicida: NO TOCAR
 
     combos = [[]]
     for r in range(1, len(groups)+1):
@@ -1071,6 +1090,3 @@ if results:
             pass
 else:
     st.info("No hubo escenarios evaluables (¿AUC cruda=0 en todas las combinaciones o ventana de siembra vacía?).")
-
-
-
