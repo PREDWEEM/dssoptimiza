@@ -556,6 +556,97 @@ st.subheader(f"Pérdida de rendimiento estimada (%) — por densidad efectiva (x
 def fmt_or_nan(v): return f"{v:.2f}%" if np.isfinite(v) else "—"
 st.markdown(f"**x₂ → pérdida:** **{fmt_or_nan(loss_x2_pct)}** · **x₃ → pérdida:** **{fmt_or_nan(loss_x3_pct)}**")
 
+# ================= Gráfico (Figura 2): Pérdida (%) vs x =================
+if np.isfinite(X2) or np.isfinite(X3):
+    x_curve = np.linspace(0.0, MAX_PLANTS_CAP, 400)
+    y_curve = 0.375 * x_curve / (1.0 + (0.375 * x_curve / 76.639))
+
+    fig_loss = go.Figure()
+    fig_loss.add_trace(go.Scatter(
+        x=x_curve, y=y_curve, mode="lines", name="Modelo pérdida % vs x",
+        hovertemplate="x = %{x:.1f} pl·m²<br>Pérdida: %{y:.2f}%<extra></extra>"
+    ))
+    if np.isfinite(X2):
+        fig_loss.add_trace(go.Scatter(
+            x=[X2], y=[loss_x2_pct], mode="markers+text", name="x₂: sin control (cap)",
+            text=[f"x₂ = {X2:.1f}"], textposition="top center",
+            marker=dict(size=10, symbol="diamond"),
+            hovertemplate="x₂ = %{x:.1f} pl·m²<br>Pérdida: %{y:.2f}%<extra></extra>"
+        ))
+    if np.isfinite(X3):
+        fig_loss.add_trace(go.Scatter(
+            x=[X3], y=[loss_x3_pct], mode="markers+text", name="x₃: con control (cap)",
+            text=[f"x₃ = {X3:.1f}"], textposition="top right",
+            marker=dict(size=11, symbol="star"),
+            hovertemplate="x₃ = %{x:.1f} pl·m²<br>Pérdida: %{y:.2f}%<extra></extra>"
+        ))
+    fig_loss.update_layout(
+        title=f"Figura 2 — Pérdida de rendimiento (%) vs. x (cap A2={int(MAX_PLANTS_CAP)})",
+        xaxis_title="x (pl·m²) — integral de aportes (cohortes, cap) desde siembra",
+        yaxis_title="Pérdida de rendimiento (%)",
+        margin=dict(l=10, r=10, t=40, b=10)
+    )
+    st.plotly_chart(fig_loss, use_container_width=True)
+else:
+    st.info("Figura 2: no hay valores finitos de x para graficar (revisar datos/siembra).")
+# ================= Figura 3: Composición porcentual por estado en el PC (donut) =================
+st.subheader("Figura 3 — Composición porcentual por estado en el Periodo Crítico (PC)")
+mask_pc_days = (ts >= PC_START) & (ts <= PC_END)
+
+if factor_area_to_plants is None or not np.isfinite(factor_area_to_plants):
+    st.info("AUC cruda = 0 → no se puede escalar a plantas·m²; no es posible calcular aportes en PC.")
+else:
+    # Asegurar que existan las series capeadas por estado
+    if 'S1_pl_ctrl_cap' in locals() and 'S2_pl_ctrl_cap' in locals() and 'S3_pl_ctrl_cap' in locals() and 'S4_pl_ctrl_cap' in locals():
+        mspc = (mask_since_sow & mask_pc_days).to_numpy()
+
+        a_S1 = float(np.nansum(S1_pl_ctrl_cap[mspc]))
+        a_S2 = float(np.nansum(S2_pl_ctrl_cap[mspc]))
+        a_S3 = float(np.nansum(S3_pl_ctrl_cap[mspc]))
+        a_S4 = float(np.nansum(S4_pl_ctrl_cap[mspc]))
+        tot  = a_S1 + a_S2 + a_S3 + a_S4
+
+        labels = ["S1 (FC=0.0)", "S2 (FC=0.3)", "S3 (FC=0.6)", "S4 (FC=1.0)"]
+        valores = np.array([a_S1, a_S2, a_S3, a_S4], dtype=float)
+
+        if np.isfinite(tot) and tot > 0:
+            pct = 100.0 * valores / tot
+
+            st.markdown(
+                f"**Ventana PC:** {PC_START.date()} → {PC_END.date()}  \n"
+                f"**Total (S1–S4) en PC:** **{tot:,.1f}** pl·m²"
+            )
+
+            df_pc_pct = pd.DataFrame({"Estado": labels, "% del total PC": pct}) \
+                          .sort_values("% del total PC", ascending=False) \
+                          .reset_index(drop=True)
+            st.dataframe(df_pc_pct, use_container_width=True)
+
+            st.download_button(
+                "Descargar composición porcentual en PC (CSV)",
+                df_pc_pct.to_csv(index=False).encode("utf-8"),
+                "composicion_porcentual_estados_PC.csv",
+                "text/csv",
+                key="dl_pct_estados_pc"
+            )
+
+            fig_pc_donut = go.Figure(data=[go.Pie(
+                labels=labels,
+                values=pct,
+                hole=0.5,
+                textinfo="label+percent",
+                hovertemplate="%{label}<br>%: %{value:.2f}%<extra></extra>"
+            )])
+            fig_pc_donut.update_layout(
+                title="Composición porcentual por estado en el Periodo Crítico (donut)",
+                margin=dict(l=10, r=10, t=50, b=10)
+            )
+            st.plotly_chart(fig_pc_donut, use_container_width=True)
+        else:
+            st.info("Figura 3: total en PC es 0 o no finito; no se puede calcular porcentaje.")
+    else:
+        st.info("Figura 3: faltan series por estado capeadas (S1..S4); verificá el flujo previo.")
+
 # ============================== Diagnóstico breve ===========================
 st.code(json.dumps({
     "siembra": str(sow_date),
