@@ -1049,20 +1049,7 @@ if results:
     st.download_button("Descargar Top-k (CSV)", df_top.to_csv(index=False).encode("utf-8"),
                        "topk_siembra_cronogramas.csv", "text/csv", key="dl_topk")
 
-    # Pintar bandas del mejor sobre el Gráfico 1 MANUAL (sin depender de df_best)
-    if 'fig' in locals() and paint_best and ('best' in locals()) and best and len(best.get("schedule", [])) > 0:
-        try:
-            for a in best["schedule"]:
-                x0 = pd.to_datetime(a["date"])
-                x1 = x0 + pd.Timedelta(days=int(a["days"]))
-                fig.add_vrect(x0=x0, x1=x1, line_width=0, fillcolor="rgba(30,144,255,0.18)", opacity=0.18)
-                fig.add_annotation(x=x0 + (x1 - x0)/2, y=0.86, xref="x", yref="paper",
-                                   text=a["kind"], showarrow=False, bgcolor="rgba(30,144,255,0.85)",
-                                   bordercolor="rgba(0,0,0,0.2)", borderwidth=1, borderpad=2)
-            st.plotly_chart(fig, use_container_width=True)
-        except Exception as e:
-            st.warning(f"No fue posible pintar el cronograma óptimo en el Gráfico 1: {e}")
-
+  
     # ===================== Gráfico 1 REHECHO según el MEJOR escenario =====================
     try:
         sow_best = pd.to_datetime(best["sow"]).date()
