@@ -1264,3 +1264,64 @@ if results:
         st.warning(f"No fue posible dibujar las Figuras 2 y 3 del mejor escenario: {e}")
 else:
     st.info("Aún no hay resultados de optimización para mostrar.")
+
+
+# ======= NUEVO — Figura 4: Dinámica temporal de S1–S4 (mejor escenario) =======
+st.subheader("Figura 4 — Dinámica temporal de S1–S4 (mejor escenario)")
+
+# Series DIARIAS (pl·m²·día⁻¹) con control + cap, sólo desde siembra óptima
+df_states_daily_b = pd.DataFrame({
+    "fecha": ts_b,
+    "S1": np.where(mask_since_b, S1_ctrl_cap_b, 0.0),
+    "S2": np.where(mask_since_b, S2_ctrl_cap_b, 0.0),
+    "S3": np.where(mask_since_b, S3_ctrl_cap_b, 0.0),
+    "S4": np.where(mask_since_b, S4_ctrl_cap_b, 0.0),
+})
+
+# Agregación SEMANAL para visualizar más limpio
+df_states_week_b = (
+    df_states_daily_b
+    .set_index("fecha")
+    .resample("W-MON").sum()
+    .reset_index()
+)
+
+# Área apilada semanal (pl·m²·sem⁻¹)
+fig_states = go.Figure()
+fig_states.add_trace(go.Scatter(
+    x=df_states_week_b["fecha"], y=df_states_week_b["S1"],
+    mode="lines", name="S1 (FC=0.0)",
+    stackgroup="one",
+    hovertemplate="Lunes: %{x|%Y-%m-%d}<br>S1: %{y:.2f} pl·m²·sem⁻¹<extra></extra>"
+))
+fig_states.add_trace(go.Scatter(
+    x=df_states_week_b["fecha"], y=df_states_week_b["S2"],
+    mode="lines", name="S2 (FC=0.3)",
+    stackgroup="one",
+    hovertemplate="Lunes: %{x|%Y-%m-%d}<br>S2: %{y:.2f} pl·m²·sem⁻¹<extra></extra>"
+))
+fig_states.add_trace(go.Scatter(
+    x=df_states_week_b["fecha"], y=df_states_week_b["S3"],
+    mode="lines", name="S3 (FC=0.6)",
+    stackgroup="one",
+    hovertemplate="Lunes: %{x|%Y-%m-%d}<br>S3: %{y:.2f} pl·m²·sem⁻¹<extra></extra>"
+))
+fig_states.add_trace(go.Scatter(
+    x=df_states_week_b["fecha"], y=df_states_week_b["S4"],
+    mode="lines", name="S4 (FC=1.0)",
+    stackgroup="one",
+    hovertemplate="Lunes: %{x|%Y-%m-%d}<br>S4: %{y:.2f} pl·m²·sem⁻¹<extra></extra>"
+))
+
+fig_states.update_layout(
+    title="Aportes semanales por estado (con control + cap) · pl·m²·sem⁻¹",
+    xaxis_title="Tiempo (semana iniciada en Lunes)",
+    yaxis_title="pl·m²·sem⁻¹",
+    margin=dict(l=10, r=10, t=50, b=10),
+)
+
+st.plotly_chart(fig_states, use_container_width=True)
+# ======= FIN NUEVO =======
+
+
+
