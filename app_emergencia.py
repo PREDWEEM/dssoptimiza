@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # app_emergencia.py — PREDWEEM con Optimización y Figuras por Mejor Escenario
 # - Supresión (EMERREL × (1−Ciec)) + Control (AUC) + Fenología por COHORTES
-# - Restricción: Selectivo residual POST ≥ siembra + 7 días
+# - Restricción: Selectivo residual POST ≥ siembra + 20 días
 # - Optimizadores: Grid / Búsqueda aleatoria / Recocido simulado
 # - Máx. evaluaciones hasta 100000
 # - Gráfico 1 y Figuras 2-3 recalculadas para el mejor escenario
@@ -80,9 +80,10 @@ def clean_numeric_series(s: pd.Series, decimal="."):
     return pd.to_numeric(t, errors="coerce")
 
 def _to_days(ts: pd.Series) -> np.ndarray:
-    f = pd.to_datetime(ts)
-    t_ns = f.view("int64")
-    return ((t_ns - t_ns.iloc[0]) / 1e9 / 86400.0).astype(float)
+    # FIX: usar to_numpy y astype en vez de .view para compatibilidad futura
+    f = pd.to_datetime(ts).to_numpy(dtype="datetime64[ns]")
+    t_ns = f.astype("int64")
+    return ((t_ns - t_ns[0]) / 1e9 / 86400.0).astype(float)
 
 def auc_time(fecha: pd.Series, y: np.ndarray, mask=None) -> float:
     f = pd.to_datetime(fecha); y_arr = np.asarray(y, dtype=float)
@@ -302,7 +303,7 @@ with st.sidebar:
     post_gram_date = st.date_input("Fecha graminicida (post)", value=max(min_date, sow_date), min_value=min_date, max_value=max_date, disabled=not post_gram)
 
     post_selR = st.checkbox("Selectivo + residual (post)", value=False)
-    post_min_postR = max(min_date, sow_date + timedelta(days=7))  # REGLA: ≥ siembra+7
+    post_min_postR = max(min_date, sow_date + timedelta(days=20))  # REGLA: ≥ siembra+20
     post_selR_date = st.date_input("Fecha selectivo + residual (post)", value=post_min_postR, min_value=post_min_postR, max_value=max_date, disabled=not post_selR)
     post_res_dias = st.slider("Residualidad post (días)", 30, 60, 45, 1, disabled=not post_selR)
 
@@ -315,8 +316,8 @@ if pre_glifo:  check_pre(pre_glifo_date, "Glifosato (pre)")
 if pre_selNR:  check_pre(pre_selNR_date, "Selectivo no residual (pre)")
 if pre_selR:   check_pre(pre_selR_date, "Selectivo + residual (pre)")
 if post_gram:  check_post(post_gram_date, "Graminicida (post)")
-if post_selR and post_selR_date and post_selR_date < sow_date + timedelta(days=7):
-    warnings.append(f"Selectivo + residual (post): debe ser ≥ {sow_date + timedelta(days=7)}.")
+if post_selR and post_selR_date and post_selR_date < sow_date + timedelta(days=20):
+    warnings.append(f"Selectivo + residual (post): debe ser ≥ {sow_date + timedelta(days=20)}.")
 for w in warnings: st.warning(w)
 
 if pre_glifo: add_sched("Pre · glifosato (NSr, 1d)", pre_glifo_date, None, "Barbecho")
@@ -366,17 +367,21 @@ def weights_one_day(date_val):
     if not date_val: return np.zeros_like(fechas_d, float)
     d0 = date_val
     return ((fechas_d >= d0) & (fechas_d < (d0 + timedelta(days=1)))).astype(float)
+
 def weights_residual(start_date, dias):
     w = np.zeros_like(fechas_d, float)
     if (not start_date) or (not dias) or (int(dias) <= 0): return w
     d0 = start_date; d1 = start_date + timedelta(days=int(dias))
     mask = (fechas_d >= d0) & (fechas_d < d1)
     if not mask.any(): return w
-    idxs = np.where(mask)[0]; t_rel = np.arange(len(idxs), float)
-    if decaimiento_tipo == "Ninguno": w[idxs] = 1.0
+    idxs = np.where(mask)[0]
+    t_rel = np.arange(len(idxs), dtype=float)  # FIX importante: dtype, no 'float' como stop
+    if decaimiento_tipo == "Ninguno":
+        w[idxs] = 1.0
     elif decaimiento_tipo == "Lineal":
         L = max(1, len(idxs)); w[idxs] = 1.0 - (t_rel / max(1.0, L - 1))
-    else: w[idxs] = np.exp(-lam_exp * t_rel) if lam_exp is not None else 1.0
+    else:
+        w[idxs] = np.exp(-lam_exp * t_rel) if lam_exp is not None else 1.0
     return w
 
 # ==================== Aportes por estado (pl·m²·día⁻¹) =================
@@ -623,7 +628,7 @@ with st.sidebar:
 
     # Tratamientos a considerar
     use_pre_selR_opt  = st.checkbox("Incluir pre-siembra + residual", value=True)
-    use_post_selR_opt = st.checkbox("Incluir post + residual (≥ siembra + 7 días)", value=True)
+    use_post_selR_opt = st.checkbox("Incluir post + residual (≥ siembra + 20 días)", value=True)
     use_post_gram_opt = st.checkbox(f"Incluir graminicida post (+{POST_GRAM_FORWARD_DAYS-1}d)", value=True)
 
     # Eficiencias
@@ -742,10 +747,10 @@ def act_post_gram(date_val, eff):     return {"kind":"post_gram", "date":pd.to_d
 def perdida_rinde_pct_local(x): x = np.asarray(x, float); return 0.375 * x / (1.0 + (0.375 * x / 76.639))
 
 def evaluate(sd: dt.date, schedule: list):
-    # Regla: post_selR >= siembra + 7 días
-    sow_plus_7 = pd.to_datetime(sd) + pd.Timedelta(days=7)
+    # Regla: post_selR >= siembra + 20 días
+    sow_plus_20 = pd.to_datetime(sd) + pd.Timedelta(days=20)
     for a in schedule:
-        if a["kind"] == "post_selR" and pd.to_datetime(a["date"]) < sow_plus_7:
+        if a["kind"] == "post_selR" and pd.to_datetime(a["date"]) < sow_plus_20:
             return None
     env = recompute_for_sow(sd)
     if env is None: return None
@@ -797,7 +802,7 @@ def pre_dates_for(sow_d):
         cur = cur + pd.Timedelta(days=int(pre_step_days))
     return out
 def post_dates_for(sow_d):
-    start = sow_d + pd.Timedelta(days=7)  # regla
+    start = sow_d + pd.Timedelta(days=20)  # regla (≥ siembra + 20)
     end   = sow_d + pd.Timedelta(days=int(post_days_fw))
     if end < start: return []
     cur, out = start, []
@@ -1259,4 +1264,3 @@ if results:
         st.warning(f"No fue posible dibujar las Figuras 2 y 3 del mejor escenario: {e}")
 else:
     st.info("Aún no hay resultados de optimización para mostrar.")
-
