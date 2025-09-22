@@ -1264,10 +1264,81 @@ if results:
         st.warning(f"No fue posible dibujar las Figuras 2 y 3 del mejor escenario: {e}")
 else:
     st.info("Aún no hay resultados de optimización para mostrar.")
-
+    
+# ======= ALTERNATIVO STANDALONE (fuera de otros try) =======
 try:
-    sow_best = pd.to_datetime(best["sow"]).date()
-    env = recompute_for_sow(sow_best)
-    ...
+    need = any(n not in locals() for n in [
+        "best","recompute_for_sow","ts_b","mask_since_b",
+        "S1_ctrl_cap_b","S2_ctrl_cap_b","S3_ctrl_cap_b","S4_ctrl_cap_b"
+    ])
+    if need:
+        sow_best = pd.to_datetime(best["sow"]).date()
+        env_tmp = recompute_for_sow(sow_best)
+        ts_b        = env_tmp["ts"]
+        fechas_d_b  = env_tmp["fechas_d"]
+        mask_since_b= env_tmp["mask_since"]
+        S1p, S2p, S3p, S4p = env_tmp["S_pl"]
+        sup_cap_b   = env_tmp["sup_cap"]
+
+        c1 = np.ones_like(fechas_d_b, float)
+        c2 = np.ones_like(fechas_d_b, float)
+        c3 = np.ones_like(fechas_d_b, float)
+        c4 = np.ones_like(fechas_d_b, float)
+
+        def _apply(weights, eff, states):
+            if eff <= 0 or not states: return
+            reduc = np.clip(1.0 - (eff/100.0)*np.clip(weights,0.0,1.0), 0.0, 1.0)
+            if "S1" in states: np.multiply(c1, reduc, out=c1)
+            if "S2" in states: np.multiply(c2, reduc, out=c2)
+            if "S3" in states: np.multiply(c3, reduc, out=c3)
+            if "S4" in states: np.multiply(c4, reduc, out=c4)
+
+        for a in best["schedule"]:
+            ini = pd.to_datetime(a["date"]).date()
+            fin = (pd.to_datetime(a["date"]) + pd.Timedelta(days=int(a["days"]))).date()
+            w = ((fechas_d_b >= ini) & (fechas_d_b < fin)).astype(float)
+            _apply(w, a["eff"], a["states"])
+
+        total_ctrl_daily = (S1p*c1 + S2p*c2 + S3p*c3 + S4p*c4)
+        eps = 1e-12
+        scale = np.where(total_ctrl_daily > eps, np.minimum(1.0, sup_cap_b / total_ctrl_daily), 0.0)
+        S1_ctrl_cap_b = S1p * c1 * scale
+        S2_ctrl_cap_b = S2p * c2 * scale
+        S3_ctrl_cap_b = S3p * c3 * scale
+        S4_ctrl_cap_b = S4p * c4 * scale
+
+    # (mismo código que arriba a partir de df_states_daily_b …)
+    df_states_daily_b = pd.DataFrame({
+        "fecha": ts_b,
+        "S1": np.where(mask_since_b, S1_ctrl_cap_b, 0.0),
+        "S2": np.where(mask_since_b, S2_ctrl_cap_b, 0.0),
+        "S3": np.where(mask_since_b, S3_ctrl_cap_b, 0.0),
+        "S4": np.where(mask_since_b, S4_ctrl_cap_b, 0.0),
+    })
+    df_states_week_b = (
+        df_states_daily_b
+        .set_index("fecha")
+        .resample("W-MON").sum()
+        .reset_index()
+    )
+    st.subheader("Figura 4 — Dinámica temporal de S1–S4 (mejor escenario)")
+    fig_states = go.Figure()
+    fig_states.add_trace(go.Scatter(x=df_states_week_b["fecha"], y=df_states_week_b["S1"], mode="lines", name="S1 (FC=0.0)", stackgroup="one",
+                                    hovertemplate="Lunes: %{x|%Y-%m-%d}<br>S1: %{y:.2f} pl·m²·sem⁻¹<extra></extra>"))
+    fig_states.add_trace(go.Scatter(x=df_states_week_b["fecha"], y=df_states_week_b["S2"], mode="lines", name="S2 (FC=0.3)", stackgroup="one",
+                                    hovertemplate="Lunes: %{x|%Y-%m-%d}<br>S2: %{y:.2f} pl·m²·sem⁻¹<extra></extra>"))
+    fig_states.add_trace(go.Scatter(x=df_states_week_b["fecha"], y=df_states_week_b["S3"], mode="lines", name="S3 (FC=0.6)", stackgroup="one",
+                                    hovertemplate="Lunes: %{x|%Y-%m-%d}<br>S3: %{y:.2f} pl·m²·sem⁻¹<extra></extra>"))
+    fig_states.add_trace(go.Scatter(x=df_states_week_b["fecha"], y=df_states_week_b["S4"], mode="lines", name="S4 (FC=1.0)", stackgroup="one",
+                                    hovertemplate="Lunes: %{x|%Y-%m-%d}<br>S4: %{y:.2f} pl·m²·sem⁻¹<extra></extra>"))
+    fig_states.update_layout(title="Aportes semanales por estado (con control + cap) · pl·m²·sem⁻¹",
+                             xaxis_title="Tiempo (semana iniciada en Lunes)",
+                             yaxis_title="pl·m²·sem⁻¹",
+                             margin=dict(l=10, r=10, t=50, b=10))
+    st.plotly_chart(fig_states, use_container_width=True)
+except Exception as e:
+    st.warning(f"No fue posible dibujar la Figura 4 (S1–S4): {e}")
+# ======= FIN ALTERNATIVO =======
+
 
 
