@@ -269,6 +269,11 @@ else:
     conv_caption = "No se pudo escalar por área (AUC de EMERREL cruda = 0)."
 
 # =================== Manejo (manual) ===================
+
+# Constantes de ventanas reglamentarias
+PRE_R_MAX_BEFORE_SOW_DAYS = 14  # PRESIEMBRA R: sólo ≤ siembra - 14
+PREEM_R_MAX_AFTER_SOW_DAYS = 7  # PREEMERGENTE R: 0..+7 desde siembra
+
 sched_rows = []
 def add_sched(nombre, fecha_ini, dias_res=None, nota=""):
     if not fecha_ini: return
