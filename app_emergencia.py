@@ -287,16 +287,51 @@ def add_sched(nombre, fecha_ini, dias_res=None, nota=""):
 
 with st.sidebar:
     st.header("Manejo pre-siembra (manual)")
-    min_date = ts.min().date(); max_date = ts.max().date()
+    min_date = ts.min().date()
+    max_date = ts.max().date()
+
+    # --- Glifosato total (barbecho) ---
     pre_glifo = st.checkbox("Herbicida total (glifosato)", value=False)
-    pre_glifo_date = st.date_input("Fecha glifosato (pre)", value=min_date, min_value=min_date, max_value=max_date, disabled=not pre_glifo)
+    pre_glifo_date = st.date_input(
+        "Fecha glifosato (pre)",
+        value=min_date,
+        min_value=min_date,
+        max_value=max_date,
+        disabled=not pre_glifo
+    )
 
+    # --- Selectivo no residual (PRE) ---
     pre_selNR = st.checkbox("Selectivo no residual (pre)", value=False)
-    pre_selNR_date = st.date_input("Fecha selectivo no residual (pre)", value=min_date, min_value=min_date, max_value=max_date, disabled=not pre_selNR)
+    pre_selNR_date = st.date_input(
+        "Fecha selectivo no residual (pre)",
+        value=min_date,
+        min_value=min_date,
+        max_value=max_date,
+        disabled=not pre_selNR
+    )
 
-    pre_selR  = st.checkbox("Selectivo + residual (pre)", value=False)
-    pre_res_dias = st.slider("Residualidad pre (días)", 30, 60, 45, 1, disabled=not pre_selR)
-    pre_selR_date = st.date_input("Fecha selectivo + residual (pre)", value=min_date, min_value=min_date, max_value=max_date, disabled=not pre_selR)
+    # --- Selectivo + residual (PRE) ---
+    pre_selR = st.checkbox("Selectivo + residual (pre)", value=False)
+
+    if pre_selR:
+        # Restricción: fecha máxima = siembra - 14 días
+        limite_max = sow_date - timedelta(days=14)
+
+        pre_selR_date = st.date_input(
+            "Fecha selectivo + residual (pre)",
+            value=max(limite_max, min_date),  # por defecto justo en el límite si es posible
+            min_value=min_date,
+            max_value=limite_max,
+        )
+        pre_res_dias = st.slider("Residualidad pre (días)", 30, 60, 45, 1)
+
+        # Validación extra
+        if pre_selR_date > limite_max:
+            st.error(f"❌ El selectivo residual PRE-siembra debe aplicarse como máximo el {limite_max} o antes (≥14 días antes de la siembra)")
+        else:
+            st.success(f"✔ PRE-siembra configurado: {pre_selR_date} (residualidad {pre_res_dias} días)")
+    else:
+        pre_selR_date, pre_res_dias = None, None
 
     st.header("Manejo post-emergencia (manual)")
     post_gram = st.checkbox("Selectivo graminicida (post)", value=False)
