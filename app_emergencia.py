@@ -1,4 +1,25 @@
+
 # -*- coding: utf-8 -*-
+# PREDWEEM — Supresión (1−Ciec) + Control (AUC) + Cohortes · Optimización
+# Módulo principal de la app Streamlit
+#
+# Notas clave:
+# - Se modela supresión (EMERREL × (1−Ciec)) y control por tratamientos.
+# - Cohortes S1..S4 (edad relativa a la emergencia).
+# - Tope único de densidad efectiva (A2) configurable.
+# - Restricciones de ventana para tratamientos (pre, preemergente y post).
+# - Optimizadores: Grid / Búsqueda aleatoria / Recocido simulado.
+# - Máx. evaluaciones controlado desde la UI.
+#
+# IMPORTANTE:
+# - Las constantes y los imports van en la Sección 2.
+# - La configuración de Streamlit (set_page_config, title) también va en Sección 2,
+#   después de los imports (no se puede invocar st.* antes de importar streamlit).
+
+__app_name__ = "PREDWEEM"
+__version__ = "2025.03"
+APP_TITLE = "PREDWEEM · Supresión (1−Ciec) + Control (AUC) + Cohortes · Optimización"
+
 import io, re, json, math, datetime as dt
 import numpy as np
 import pandas as pd
