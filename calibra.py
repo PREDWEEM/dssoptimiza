@@ -1,47 +1,72 @@
 # -*- coding: utf-8 -*-
-# app_calibracion.py — Calibración de PREDWEEM con datos independientes
-# - Admite objetivos: x (pl·m²), A2 (pl·m²), o serie semanal (pl·m²·sem⁻¹)
-# - Opcional: cronograma de manejo (JSON) en formato del “mejor escenario”
-# - Optimizadores: Búsqueda aleatoria / Recocido simulado
-# - Salidas: métricas, gráficos y JSON de parámetros calibrados
+# app_emergencia.py — PREDWEEM (Supresión + Control + Cohortes) con Optimización y Mejor Escenario
 
 import io, re, json, math, datetime as dt
+from datetime import timedelta, date
+import itertools, random, math as _math
+
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
-from datetime import timedelta
-import random, math as _math
+from urllib.request import urlopen, Request
+from urllib.error import URLError, HTTPError
 
-# ============================== UI base ==============================
-st.set_page_config(page_title="PREDWEEM · Calibración", layout="wide")
-st.title("PREDWEEM · Calibración con datos independientes")
+# -------------------------- Estado UI optimización --------------------------
+if "opt_running" not in st.session_state:
+    st.session_state.opt_running = False
+if "opt_stop" not in st.session_state:
+    st.session_state.opt_stop = False
 
-# ============================== Helpers I/O ==============================
+APP_TITLE = "PREDWEEM · Supresión (1−Ciec) + Control (AUC) + Cohortes · Optimización"
+st.set_page_config(page_title=APP_TITLE, layout="wide", initial_sidebar_state="expanded")
+st.title(APP_TITLE)
+
+# -------------------------- Constantes globales --------------------------
+NR_DAYS_DEFAULT = 10               # duración por defecto no residual
+POST_GRAM_FORWARD_DAYS = 11        # ventana fija día 0 + 10 (NO TOCAR)
+PRE_R_MIN_DAYS_BEFORE_SOW = 14     # presiembra residual: como máximo hasta siembra-14
+PREEM_R_MAX_AFTER_SOW_DAYS = 10    # preemergente residual: como máximo hasta siembra+10
+POST_R_MIN_AFTER_SOW_DAYS = 20     # post residual: mínimo siembra+20
+
+# “banderas” de UI
+SHOW_PLANTS_AXIS_MAX = 100
+
 def sniff_sep_dec(text: str):
     sample = text[:8000]
     counts = {sep: sample.count(sep) for sep in [",", ";", "\t"]}
     sep_guess = max(counts, key=counts.get) if counts else ","
     dec_guess = "."
-    if sample.count(",") > sample.count(".") and re.search(r",\d", sample): dec_guess = ","
+    if sample.count(",") > sample.count(".") and re.search(r",\d", sample):
+        dec_guess = ","
     return sep_guess, dec_guess
 
-def parse_csv_file(uploaded, sep_opt="auto", dec_opt="auto", dayfirst=True):
-    raw = uploaded.read()
+@st.cache_data(show_spinner=False)
+def read_raw_from_url(url: str) -> bytes:
+    req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urlopen(req, timeout=30) as r:
+        return r.read()
+
+def read_raw(up, url):
+    if up is not None: return up.read()
+    if url: return read_raw_from_url(url)
+    raise ValueError("No hay fuente de datos.")
+
+def parse_csv(raw, sep_opt, dec_opt, encoding="utf-8", on_bad="warn"):
     head = raw[:8000].decode("utf-8", errors="ignore")
-    sep_g, dec_g = sniff_sep_dec(head)
-    sep = sep_g if sep_opt=="auto" else ("," if sep_opt=="," else (";" if sep_opt==";" else "\t"))
-    dec = dec_g if dec_opt=="auto" else dec_opt
-    df = pd.read_csv(io.BytesIO(raw), sep=sep, decimal=dec, engine="python")
-    if "fecha" in df.columns:
-        df["fecha"] = pd.to_datetime(df["fecha"], dayfirst=dayfirst, errors="coerce")
-    return df
+    sep_guess, dec_guess = sniff_sep_dec(head)
+    sep = sep_guess if sep_opt == "auto" else ("," if sep_opt=="," else (";" if sep_opt==";" else "\t"))
+    dec = dec_guess if dec_opt == "auto" else dec_opt
+    df = pd.read_csv(io.BytesIO(raw), sep=sep, decimal=dec, engine="python", on_bad_lines=on_bad)
+    return df, {"sep": sep, "dec": dec, "enc": encoding}
 
 def clean_numeric_series(s: pd.Series, decimal="."):
     if s.dtype.kind in "if": return pd.to_numeric(s, errors="coerce")
     t = s.astype(str).str.strip().str.replace("%","",regex=False)
-    if decimal == ",": t = t.str.replace(".","",regex=False).str.replace(",",".",regex=False)
-    else: t = t.str.replace(",","",regex=False)
+    if decimal == ",":
+        t = t.str.replace(".","",regex=False).str.replace(",",".",regex=False)
+    else:
+        t = t.str.replace(",","",regex=False)
     return pd.to_numeric(t, errors="coerce")
 
 def _to_days(ts: pd.Series) -> np.ndarray:
@@ -69,331 +94,629 @@ def cap_cumulative(series, cap, active_mask):
             out[i] = 0.0
     return out
 
-# ============================== Sidebar: datos & opciones ==============================
-with st.sidebar:
-    st.header("Datos de entrada")
-    up_emer = st.file_uploader("EMERREL (CSV: fecha, valor)", type=["csv"])
-    up_obs  = st.file_uploader("Observaciones (CSV)", type=["csv"])
-    st.caption("Observaciones admitidas:\n- Serie semanal: columnas `fecha`,`obs_sem` (pl·m²·sem⁻¹)\n- x total: una fila con `x_obs`\n- A2 total: una fila con `A2_obs`")
-    up_sched = st.file_uploader("Cronograma (JSON, opcional)", type=["json"])
-
-    sep_opt = st.selectbox("Delimitador CSV", ["auto", ",", ";", "\\t"], index=0)
-    dec_opt = st.selectbox("Decimal CSV", ["auto", ".", ","], index=0)
-    dayfirst = st.checkbox("Fecha dd/mm/aaaa", value=True)
-
-    st.header("Escenario y tope")
-    MAX_PLANTS_CAP = float(st.selectbox("Tope A2 (pl·m²)", [250,125,62], index=0))
-
-    st.header("Siembra")
-    default_year = dt.date.today().year
-    sow_date = st.date_input("Fecha de siembra", value=dt.date(default_year,5,1))
-
-    st.header("Objetivo de calibración")
-    target_kind = st.selectbox("Variable a ajustar", ["Serie semanal", "x total", "A2 total"], index=0)
-    loss_fn = st.selectbox("Función de error", ["RMSE","MAE","Huber"], index=0)
-
-if up_emer is None or up_obs is None:
-    st.info("Cargá EMERREL y Observaciones para continuar.")
-    st.stop()
-
-# ============================== Carga EMERREL ==============================
-df_e = parse_csv_file(up_emer, sep_opt, dec_opt, dayfirst)
-if df_e.empty:
-    st.error("El CSV de EMERREL está vacío."); st.stop()
-
-cols_e = list(df_e.columns)
-c_f = st.selectbox("Columna fecha (EMERREL)", cols_e, index=0)
-c_v = st.selectbox("Columna valor (EMERREL)", cols_e, index=(1 if len(cols_e)>1 else 0))
-ts = pd.to_datetime(df_e[c_f], dayfirst=dayfirst, errors="coerce")
-val = clean_numeric_series(df_e[c_v], decimal="," if dec_opt=="," else ".").astype(float)
-df_emer = pd.DataFrame({"fecha": ts, "EMERREL": val}).dropna().sort_values("fecha").reset_index(drop=True)
-if df_emer.empty:
-    st.error("Tras el parseo no quedaron filas válidas para EMERREL."); st.stop()
-
-# ============================== Carga Observaciones ==============================
-df_obs = parse_csv_file(up_obs, sep_opt, dec_opt, dayfirst)
-if df_obs.empty:
-    st.error("El CSV de observaciones está vacío."); st.stop()
-
-x_obs = None; A2_obs = None
-if target_kind == "Serie semanal":
-    if not {"fecha","obs_sem"}.issubset(df_obs.columns):
-        st.error("La observación semanal requiere columnas: fecha, obs_sem"); st.stop()
-    df_obs["fecha"] = pd.to_datetime(df_obs["fecha"], dayfirst=dayfirst, errors="coerce")
-    df_obs = df_obs.dropna().sort_values("fecha").reset_index(drop=True)
-elif target_kind == "x total":
-    if "x_obs" not in df_obs.columns:
-        st.error("x total requiere columna: x_obs"); st.stop()
-    x_obs = float(df_obs["x_obs"].iloc[0])
-else:
-    if "A2_obs" not in df_obs.columns:
-        st.error("A2 total requiere columna: A2_obs"); st.stop()
-    A2_obs = float(df_obs["A2_obs"].iloc[0])
-
-# ============================== Cronograma (opcional) ==============================
-schedule = []
-if up_sched is not None:
-    try:
-        raw_json = up_sched.read().decode("utf-8")
-        schedule = json.loads(raw_json)
-        if not isinstance(schedule, list): schedule = []
-        # normalizar fechas a date
-        for a in schedule:
-            if "date" in a:
-                a["date"] = pd.to_datetime(a["date"]).date()
-    except Exception as e:
-        st.warning(f"No se pudo leer el JSON del cronograma: {e}")
-        schedule = []
-
-# ============================== Parámetros a calibrar ==============================
-with st.sidebar:
-    st.header("Parámetros a calibrar")
-    calib_k_beer   = st.checkbox("Calibrar k (Beer–Lambert)", True)
-    calib_lai_max  = st.checkbox("Calibrar LAI máximo", True)
-    calib_t_lag    = st.checkbox("Calibrar días a emergencia cultivo (lag)", True)
-    calib_t_close  = st.checkbox("Calibrar días a cierre entresurco", True)
-    calib_LAIhc    = st.checkbox("Calibrar LAIhc (Ciec)", True)
-    calib_eff      = st.checkbox("Calibrar eficiencias del cronograma (multiplicador 0.5–1.2)", value=(len(schedule)>0))
-
-    st.header("Cotas (mín–máx)")
-    k_min,k_max        = st.number_input("k min",0.1,1.5,0.3,0.05), st.number_input("k max",0.1,1.5,1.0,0.05)
-    lai_min,lai_max    = st.number_input("LAI max min",0.1,10.0,2.0,0.1), st.number_input("LAI max max",0.1,10.0,6.0,0.1)
-    lag_min,lag_max    = st.number_input("lag min (d)",0,60,3,1), st.number_input("lag max (d)",0,60,12,1)
-    close_min,close_max= st.number_input("cierre min (d)",10,120,35,1), st.number_input("cierre max (d)",10,120,80,1)
-    hc_min,hc_max      = st.number_input("LAIhc min",0.5,10.0,2.0,0.1), st.number_input("LAIhc max",0.5,10.0,6.0,0.1)
-
-# ============================== Series base para simular ==============================
-ts = pd.to_datetime(df_emer["fecha"])
-mask_since_sow = (ts.dt.date >= sow_date)
-emerrel = df_emer["EMERREL"].astype(float).clip(lower=0.0).to_numpy()
-
-def compute_canopy(fechas: pd.Series, sow_date: dt.date, t_lag: int, t_close: int, lai_max: float, k_beer: float):
-    days = np.array([(pd.Timestamp(d).date() - sow_date).days for d in fechas], float)
+def compute_canopy(fechas: pd.Series, sow_date: dt.date, mode_canopy: str,
+                   t_lag: int, t_close: int, cov_max: float, lai_max: float, k_beer: float):
+    days_since_sow = np.array([(pd.Timestamp(d).date() - sow_date).days for d in fechas], dtype=float)
     def logistic_between(days, start, end, y_max):
         if end <= start: end = start + 1
         t_mid = 0.5*(start+end); r = 4.0/max(1.0,(end-start))
         return y_max/(1.0+np.exp(-r*(days-t_mid)))
-    LAI = np.where(days < t_lag, 0.0, logistic_between(days, t_lag, t_close, lai_max))
-    LAI = np.clip(LAI,0.0,lai_max)
-    fc_dyn = 1 - np.exp(-k_beer*LAI)
+    if mode_canopy == "Cobertura dinámica (%)":
+        fc_dyn = np.where(days_since_sow < t_lag, 0.0, logistic_between(days_since_sow, t_lag, t_close, cov_max/100.0))
+        fc_dyn = np.clip(fc_dyn,0.0,1.0)
+        LAI = -np.log(np.clip(1.0-fc_dyn,1e-9,1.0))/max(1e-6,k_beer)
+        LAI = np.clip(LAI,0.0,lai_max)
+    else:
+        LAI = np.where(days_since_sow < t_lag, 0.0, logistic_between(days_since_sow, t_lag, t_close, lai_max))
+        LAI = np.clip(LAI,0.0,lai_max)
+        fc_dyn = 1 - np.exp(-k_beer*LAI)
+        fc_dyn = np.clip(fc_dyn,0.0,1.0)
     return fc_dyn, LAI
 
-def simulate(params, schedule_in=None, eff_mult=1.0):
-    # params: dict con t_lag,t_close,lai_max,k_beer,LAIhc
-    t_lag = int(params["t_lag"]); t_close=int(params["t_close"])
-    lai_m = float(params["lai_max"]); k_b=float(params["k_beer"]); LAIhc=float(params["LAIhc"])
-
-    FC, LAI = compute_canopy(ts, sow_date, t_lag, t_close, lai_m, k_b)
-    Ca, Cs = 250.0, 250.0  # densidades estándar para Ciec
-    Ciec = np.clip((LAI / max(1e-6, LAIhc)) * (Ca / Cs), 0.0, 1.0)
-    one_minus = np.clip(1.0 - Ciec, 0.0, 1.0)
-
-    births = np.where(mask_since_sow.to_numpy(), emerrel, 0.0)
-    s = pd.Series(births, index=ts)
-    S1 = s.rolling(6, min_periods=0).sum().shift(1).fillna(0.0).to_numpy(float)
-    S2 = s.rolling(21, min_periods=0).sum().shift(7).fillna(0.0).to_numpy(float)
-    S3 = s.rolling(32, min_periods=0).sum().shift(28).fillna(0.0).to_numpy(float)
-    S4 = s.cumsum().shift(60).fillna(0.0).to_numpy(float)
-
-    auc_cruda = auc_time(ts, emerrel, mask=mask_since_sow)
-    if auc_cruda <= 0: return None
-    factor_area = MAX_PLANTS_CAP / auc_cruda
-
-    # coef FC por estado (como app principal)
-    S1_pl = np.where(mask_since_sow, S1 * one_minus * 0.0 * factor_area, 0.0)
-    S2_pl = np.where(mask_since_sow, S2 * one_minus * 0.3 * factor_area, 0.0)
-    S3_pl = np.where(mask_since_sow, S3 * one_minus * 0.6 * factor_area, 0.0)
-    S4_pl = np.where(mask_since_sow, S4 * one_minus * 1.0 * factor_area, 0.0)
-
-    base_pl_daily = np.where(mask_since_sow.to_numpy(), emerrel * factor_area, 0.0)
-    base_cap = cap_cumulative(base_pl_daily, MAX_PLANTS_CAP, mask_since_sow.to_numpy())
-    sup_cap = np.minimum(S1_pl + S2_pl + S3_pl + S4_pl, base_cap)
-
-    # manejo
-    ctrl = np.ones((4, len(ts)), float)
-    if schedule_in:
-        fechas_d = ts.dt.date.values
-        def weights(d0, days):
-            d0 = pd.to_datetime(d0).date() if not isinstance(d0, dt.date) else d0
-            d1 = pd.to_datetime(d0) + pd.Timedelta(days=int(days))
-            w = ((fechas_d >= d0) & (fechas_d < d1.date())).astype(float)
-            return w
-        for a in schedule_in:
-            eff = float(a.get("eff",0))*eff_mult
-            w = weights(a["date"], a["days"])
-            reduc = np.clip(1.0 - (eff/100.0)*w, 0.0, 1.0)
-            stset = set(a.get("states",["S1","S2","S3","S4"]))
-            if "S1" in stset: ctrl[0] *= reduc
-            if "S2" in stset: ctrl[1] *= reduc
-            if "S3" in stset: ctrl[2] *= reduc
-            if "S4" in stset: ctrl[3] *= reduc
-
-    S1c = S1_pl*ctrl[0]; S2c=S2_pl*ctrl[1]; S3c=S3_pl*ctrl[2]; S4c=S4_pl*ctrl[3]
-    total_ctrl = S1c+S2c+S3c+S4c
-    total_ctrl_cap = np.minimum(total_ctrl, sup_cap)
-
-    # outputs
-    weekly = (pd.DataFrame({"fecha": ts, "val": total_ctrl_cap})
-                .set_index("fecha").resample("W-MON").sum().reset_index())
-    X3 = float(np.nansum(total_ctrl_cap[mask_since_sow]))
-    # A2 por AUC
-    sup_equiv  = np.divide(sup_cap,        factor_area, out=np.zeros_like(sup_cap),        where=(factor_area>0))
-    ctrl_equiv = np.divide(total_ctrl_cap, factor_area, out=np.zeros_like(total_ctrl_cap), where=(factor_area>0))
-    auc_sup    = auc_time(ts, sup_equiv,  mask=mask_since_sow)
-    auc_ctrl   = auc_time(ts, ctrl_equiv, mask=mask_since_sow)
-    A2_ctrl = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP*(auc_ctrl/auc_cruda))
-    return {"weekly": weekly, "x3": X3, "A2_ctrl": A2_ctrl}
-
-# ============================== Pérdida / Costo ==============================
-def huber(res, delta=1.0):
-    a = np.abs(res)
-    return np.where(a<=delta, 0.5*a*a, delta*(a-0.5*delta))
-
-def score(sim, df_obs, kind, loss="RMSE"):
-    if sim is None: return np.inf
-    if kind == "Serie semanal":
-        dfm = pd.merge(df_obs[["fecha","obs_sem"]], sim["weekly"], on="fecha", how="inner")
-        if len(dfm)==0: return np.inf
-        err = dfm["val"].to_numpy(float) - dfm["obs_sem"].to_numpy(float)
-    elif kind == "x total":
-        err = np.array([sim["x3"] - float(x_obs)])
-    else:
-        err = np.array([sim["A2_ctrl"] - float(A2_obs)])
-    if loss == "RMSE":
-        return float(np.sqrt(np.mean(err**2)))
-    elif loss == "MAE":
-        return float(np.mean(np.abs(err)))
-    else:
-        return float(np.mean(huber(err)))
-
-# ============================== Muestreo de parámetros ==============================
-def random_params():
-    p = {}
-    if calib_t_lag:   p["t_lag"]   = random.randint(lag_min, lag_max)
-    else:             p["t_lag"]   = int((lag_min+lag_max)//2)
-    if calib_t_close: p["t_close"] = random.randint(close_min, close_max)
-    else:             p["t_close"] = int((close_min+close_max)//2)
-    if calib_lai_max: p["lai_max"] = random.uniform(lai_min, lai_max)
-    else:             p["lai_max"] = float((lai_min+lai_max)/2)
-    if calib_k_beer:  p["k_beer"]  = random.uniform(k_min, k_max)
-    else:             p["k_beer"]  = float((k_min+k_max)/2)
-    if calib_LAIhc:   p["LAIhc"]   = random.uniform(hc_min, hc_max)
-    else:             p["LAIhc"]   = float((hc_min+hc_max)/2)
-    return p
-
-# ============================== Optimizadores ==============================
 with st.sidebar:
-    st.header("Optimización")
-    opt_kind = st.selectbox("Optimizador", ["Búsqueda aleatoria", "Recocido simulado"], index=0)
-    max_evals = st.number_input("Máx. evaluaciones", 100, 50000, 3000, 100)
-    sa_iters  = st.number_input("Iteraciones SA (si aplica)", 100, 50000, 3000, 100)
-    sa_T0     = st.number_input("Temperatura inicial", 0.01, 50.0, 5.0, 0.1)
-    sa_cool   = st.number_input("Enfriamiento γ", 0.80, 0.9999, 0.995, 0.0001)
+    st.header("Escenario de infestación")
+    MAX_PLANTS_CAP = float(st.selectbox(
+        "Tope de densidad efectiva (pl·m²)",
+        options=[250, 125, 62],
+        index=0,
+        help="Define el tope único de densidad efectiva y A2."
+    ))
 
-start = st.button("▶️ Calibrar", use_container_width=True)
+st.caption(
+    f"AUC(EMERREL cruda) ≙ tope A2 **= {int(MAX_PLANTS_CAP)} pl·m²**. "
+    "Cohortes S1..S4 (edad desde emergencia)."
+)
 
-best = None
-if start:
-    st.write("Calibrando…")
-    prog = st.progress(0.0)
-    if opt_kind == "Búsqueda aleatoria":
-        best = {"score": np.inf}
-        for i in range(1, int(max_evals)+1):
-            p = random_params()
-            eff_mult = random.uniform(0.5,1.2) if calib_eff else 1.0
-            sim = simulate(p, schedule_in=schedule, eff_mult=eff_mult)
-            sc = score(sim, df_obs, target_kind, loss_fn)
-            if sc < best["score"]:
-                best = {"params":p, "eff_mult":eff_mult, "sim":sim, "score":sc, "iter":i}
-            if i % max(1,int(max_evals)//100) == 0: prog.progress(i/float(max_evals))
-    else:
-        cur_p = random_params()
-        cur_eff = random.uniform(0.5,1.2) if calib_eff else 1.0
-        cur_sim = simulate(cur_p, schedule_in=schedule, eff_mult=cur_eff)
-        cur_sc = score(cur_sim, df_obs, target_kind, loss_fn)
-        best = {"params":cur_p.copy(), "eff_mult":cur_eff, "sim":cur_sim, "score":cur_sc, "iter":0}
-        T = float(sa_T0)
-        for it in range(1, int(sa_iters)+1):
-            cand = cur_p.copy()
-            if calib_t_lag:   cand["t_lag"]   = int(np.clip(cand["t_lag"]   + random.randint(-2,2), lag_min, lag_max))
-            if calib_t_close: cand["t_close"] = int(np.clip(cand["t_close"] + random.randint(-3,3), close_min, close_max))
-            if calib_lai_max: cand["lai_max"] = float(np.clip(cand["lai_max"] + random.uniform(-0.2,0.2), lai_min, lai_max))
-            if calib_k_beer:  cand["k_beer"]  = float(np.clip(cand["k_beer"] + random.uniform(-0.05,0.05), k_min, k_max))
-            if calib_LAIhc:   cand["LAIhc"]   = float(np.clip(cand["LAIhc"] + random.uniform(-0.2,0.2), hc_min, hc_max))
-            cand_eff = float(np.clip(cur_eff + (random.uniform(-0.05,0.05) if calib_eff else 0.0), 0.5, 1.2))
-            sim = simulate(cand, schedule_in=schedule, eff_mult=cand_eff)
-            sc = score(sim, df_obs, target_kind, loss_fn)
-            d = sc - cur_sc
-            if d <= 0 or random.random() < _math.exp(-d / max(1e-9, T)):
-                cur_p, cur_eff, cur_sim, cur_sc = cand, cand_eff, sim, sc
-                if sc < best["score"]:
-                    best = {"params":cand.copy(), "eff_mult":cand_eff, "sim":sim, "score":sc, "iter":it}
-            T *= float(sa_cool)
-            if it % max(1,int(sa_iters)//100) == 0: prog.progress(it/float(sa_iters))
-    prog.progress(1.0)
+# ========================= Sidebar: datos base =========================
+with st.sidebar:
+    st.header("Datos de entrada")
+    up = st.file_uploader("CSV (fecha, EMERREL diaria o EMERAC)", type=["csv"])
+    url = st.text_input("…o URL raw de GitHub", placeholder="https://raw.githubusercontent.com/usuario/repo/main/emer.csv")
+    sep_opt = st.selectbox("Delimitador", ["auto", ",", ";", "\\t"], index=0)
+    dec_opt = st.selectbox("Decimal", ["auto", ".", ","], index=0)
+    dayfirst = st.checkbox("Fecha: día/mes/año (dd/mm/yyyy)", value=True)
+    is_cumulative = st.checkbox("Mi CSV es acumulado (EMERAC)", value=False)
+    as_percent = st.checkbox("Valores en % (no 0–1)", value=True)
+    dedup = st.selectbox("Si hay fechas duplicadas…", ["sumar", "promediar", "primera"], index=0)
+    fill_gaps = st.checkbox("Rellenar días faltantes con 0", value=False)
 
-# ============================== Resultados & Gráficos ==============================
-if best is not None and "sim" in best and best["sim"] is not None:
-    st.success(f"Listo. Mejor puntaje ({loss_fn}): **{best['score']:.4f}** en iteración {best['iter']}")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Parámetros calibrados")
-        st.json({
-            "t_lag": int(best["params"]["t_lag"]),
-            "t_close": int(best["params"]["t_close"]),
-            "lai_max": round(best["params"]["lai_max"],3),
-            "k_beer": round(best["params"]["k_beer"],3),
-            "LAIhc": round(best["params"]["LAIhc"],3),
-            "eff_multiplier": round(float(best.get("eff_mult",1.0)),3)
-        })
-    with col2:
-        st.download_button(
-            "Descargar parámetros calibrados (JSON)",
-            data=json.dumps({
-                "t_lag": int(best["params"]["t_lag"]),
-                "t_close": int(best["params"]["t_close"]),
-                "lai_max": float(best["params"]["lai_max"]),
-                "k_beer": float(best["params"]["k_beer"]),
-                "LAIhc": float(best["params"]["LAIhc"]),
-                "eff_multiplier": float(best.get("eff_mult",1.0))
-            }, ensure_ascii=False, indent=2).encode("utf-8"),
-            file_name="parametros_calibrados.json",
-            mime="application/json"
-        )
+if up is None and not url:
+    st.info("Subí un CSV o pegá una URL para continuar.")
+    st.stop()
 
-    sim = best["sim"]
+# ========================= Carga y parseo CSV ==========================
+try:
+    raw = read_raw(up, url)
+    if not raw or len(raw) == 0: st.error("El archivo/URL está vacío."); st.stop()
+    df0, meta = parse_csv(raw, sep_opt, dec_opt)
+    if df0.empty: st.error("El CSV no tiene filas."); st.stop()
+    st.success(f"CSV leído. sep='{meta['sep']}' dec='{meta['dec']}' enc='{meta['enc']}'")
+except (URLError, HTTPError) as e:
+    st.error(f"No se pudo acceder a la URL: {e}"); st.stop()
+except Exception as e:
+    st.error(f"No se pudo leer el CSV: {e}"); st.stop()
 
-    if target_kind == "Serie semanal":
-        st.subheader("Serie semanal — observado vs simulado")
-        df_plot = pd.merge(df_obs[["fecha","obs_sem"]], sim["weekly"], on="fecha", how="outer").sort_values("fecha")
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=df_plot["fecha"], y=df_plot["obs_sem"], mode="lines+markers", name="Obs (pl·m²·sem⁻¹)"))
-        fig.add_trace(go.Scatter(x=df_plot["fecha"], y=df_plot["val"],     mode="lines+markers", name="Sim (pl·m²·sem⁻¹)"))
-        fig.update_layout(margin=dict(l=10,r=10,t=40,b=10), xaxis_title="Fecha (Lunes)", yaxis_title="pl·m²·sem⁻¹")
-        st.plotly_chart(fig, use_container_width=True)
+# ===================== Selección de columnas ===========================
+cols = list(df0.columns)
+with st.expander("Seleccionar columnas y depurar datos", expanded=True):
+    c_fecha = st.selectbox("Columna de fecha", cols, index=0)
+    c_valor = st.selectbox("Columna de valor (EMERREL diaria o EMERAC)", cols, index=1 if len(cols)>1 else 0)
 
-        # Paridad
-        dfm = pd.merge(df_obs[["fecha","obs_sem"]], sim["weekly"], on="fecha", how="inner")
-        st.subheader("Predicho vs Observado (paridad)")
-        fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(x=dfm["obs_sem"], y=dfm["val"], mode="markers", name="Puntos"))
-        lim = float(max(1e-6, dfm[["obs_sem","val"]].to_numpy().max()))
-        fig2.add_trace(go.Scatter(x=[0,lim], y=[0,lim], mode="lines", name="1:1", line=dict(dash="dash")))
-        fig2.update_layout(xaxis_title="Observado", yaxis_title="Simulado", margin=dict(l=10,r=10,t=30,b=10))
-        st.plotly_chart(fig2, use_container_width=True)
+    fechas = pd.to_datetime(df0[c_fecha], dayfirst=dayfirst, errors="coerce")
+    sample_str = df0[c_valor].astype(str).head(200).str.cat(sep=" ")
+    dec_for_col = "," if (sample_str.count(",")>sample_str.count(".") and re.search(r",\d", sample_str)) else "."
+    vals = clean_numeric_series(df0[c_valor], decimal=dec_for_col)
 
-    elif target_kind == "x total":
-        st.subheader("x (pl·m²) — Observado vs Simulado")
-        fig = go.Figure()
-        fig.add_trace(go.Bar(x=["Observado","Simulado"], y=[float(x_obs), float(sim["x3"])]))
-        fig.update_layout(yaxis_title="pl·m²", margin=dict(l=10,r=10,t=40,b=10))
-        st.plotly_chart(fig, use_container_width=True)
+    df = pd.DataFrame({"fecha": fechas, "valor": vals}).dropna().sort_values("fecha").reset_index(drop=True)
+    if df.empty: st.error("Tras el parseo no quedaron filas válidas (fechas/valores NaN)."); st.stop()
 
-    else:  # A2 total
-        st.subheader("A2 (pl·m²) — Observado vs Simulado")
-        fig = go.Figure()
-        fig.add_trace(go.Bar(x=["Observado","Simulado"], y=[float(A2_obs), float(sim["A2_ctrl"])]))
-        fig.update_layout(yaxis_title="pl·m²", margin=dict(l=10,r=10,t=40,b=10))
-        st.plotly_chart(fig, use_container_width=True)
+    if df["fecha"].duplicated().any():
+        if dedup == "sumar":
+            df = df.groupby("fecha").sum(numeric_only=True).rename_axis("fecha").reset_index()
+        elif dedup == "promediar":
+            df = df.groupby("fecha").mean(numeric_only=True).rename_axis("fecha").reset_index()
+        else:
+            df = df.drop_duplicates(subset=["fecha"], keep="first")
+
+    if fill_gaps and len(df) > 1:
+        full_idx = pd.date_range(df["fecha"].min(), df["fecha"].max(), freq="D")
+        df = df.set_index("fecha").reindex(full_idx).rename_axis("fecha").reset_index()
+        df["valor"] = df["valor"].fillna(0.0)
+
+    emerrel = df["valor"].astype(float)
+    if as_percent: emerrel = emerrel / 100.0
+    if is_cumulative: emerrel = emerrel.diff().fillna(0.0).clip(lower=0.0)
+    emerrel = emerrel.clip(lower=0.0)
+    df_plot = pd.DataFrame({"fecha": pd.to_datetime(df["fecha"]), "EMERREL": emerrel})
+
+# ==================== Siembra & parámetros de canopia ==================
+years = df_plot["fecha"].dt.year.dropna().astype(int)
+year_ref = int(years.mode().iloc[0]) if len(years) else dt.date.today().year
+sow_min = dt.date(year_ref, 5, 1); sow_max = dt.date(year_ref, 8, 1)
+
+with st.sidebar:
+    st.header("Siembra & Canopia (para Ciec)")
+    st.caption(f"Ventana de siembra: **{sow_min} → {sow_max}** (1 de mayo al 1 de agosto)")
+    sow_date = st.date_input("Fecha de siembra", value=sow_min, min_value=sow_min, max_value=sow_max)
+    mode_canopy = st.selectbox("Canopia", ["Cobertura dinámica (%)", "LAI dinámico"], index=0)
+    t_lag = st.number_input("Días a emergencia del cultivo (lag)", 0, 60, 7, 1)
+    t_close = st.number_input("Días a cierre de entresurco", 10, 120, 45, 1)
+    cov_max = st.number_input("Cobertura máxima (%)", 10.0, 100.0, 85.0, 1.0)
+    lai_max = st.number_input("LAI máximo", 0.0, 8.0, 3.5, 0.1)
+    k_beer = st.number_input("k (Beer–Lambert)", 0.1, 1.2, 0.6, 0.05)
+
+with st.sidebar:
+    st.header("Ciec (competencia del cultivo)")
+    use_ciec = st.checkbox("Calcular y mostrar Ciec", value=True)
+    Ca = st.number_input("Densidad real Ca (pl/m²)", 50, 700, 250, 10)
+    Cs = st.number_input("Densidad estándar Cs (pl/m²)", 50, 700, 250, 10)
+    LAIhc = st.number_input("LAIhc (escenario altamente competitivo)", 0.5, 10.0, 3.5, 0.1)
+
+# ========================= Esquema de tratamientos (inline) =========================
+from typing import List, Literal, Optional
+from pydantic import BaseModel, Field, validator
+
+TipoDecaimiento = Literal["Ninguno", "Lineal", "Exponencial"]
+TipoTrat = Literal[
+    "presiembra_residual",
+    "preemergente_residual",
+    "post_residual",
+    "post_graminicida",
+    "pre_no_residual",
+    "post_no_residual"
+]
+
+class Decaimiento(BaseModel):
+    tipo: TipoDecaimiento = "Ninguno"
+    semivida_dias: Optional[int] = None
+
+class Tratamiento(BaseModel):
+    id: str
+    tipo: TipoTrat
+    fecha_inicio: date
+    duracion_dias: int = Field(gt=0)
+    eficiencia_pct: float = Field(ge=0, le=100)
+    estados: List[Literal["S1","S2","S3","S4"]]
+    decaimiento: Optional[Decaimiento] = Decaimiento()
+    nota: Optional[str] = None
+
+class CiecCFG(BaseModel):
+    usar: bool = True
+    Ca: float = 250
+    Cs: float = 250
+    LAIhc: float = 3.5
+
+class CanopiaCFG(BaseModel):
+    modo: Literal["Cobertura","LAI"] = "Cobertura"
+    t_lag: int = 7
+    t_cierre: int = 45
+    cov_max_pct: float = 85
+    lai_max: float = 3.5
+    k_beer: float = 0.6
+    Ciec: CiecCFG = CiecCFG()
+
+class Observaciones(BaseModel):
+    x_final_plm2: Optional[float] = None
+
+class Escenario(BaseModel):
+    metadata: Optional[dict] = {}
+    siembra: date
+    tope_A2_plm2: int = 250
+    observaciones: Observaciones = Observaciones()
+    canopia: CanopiaCFG = CanopiaCFG()
+    tratamientos: List[Tratamiento] = []
+
+    @validator("tratamientos")
+    def reglas_tratamientos(cls, ts, values):
+        sow: date = values.get("siembra")
+        if sow is None: return ts
+        for t in ts:
+            if t.tipo == "presiembra_residual":
+                if not (t.fecha_inicio <= sow - timedelta(days=PRE_R_MIN_DAYS_BEFORE_SOW)):
+                    raise ValueError(f"{t.id} presiembra_residual: fecha ≤ {sow - timedelta(days=PRE_R_MIN_DAYS_BEFORE_SOW)}")
+                if set(t.estados) - {"S1","S2"}:
+                    raise ValueError(f"{t.id} presiembra_residual: sólo S1 y S2")
+
+            if t.tipo == "preemergente_residual":
+                if not (t.fecha_inicio <= sow + timedelta(days=PREEM_R_MAX_AFTER_SOW_DAYS)):
+                    raise ValueError(f"{t.id} preemergente_residual: fecha ≤ {sow + timedelta(days=PREEM_R_MAX_AFTER_SOW_DAYS)}")
+                if set(t.estados) - {"S1","S2"}:
+                    raise ValueError(f"{t.id} preemergente_residual: sólo S1 y S2")
+
+            if t.tipo == "post_residual":
+                if not (t.fecha_inicio >= sow + timedelta(days=POST_R_MIN_AFTER_SOW_DAYS)):
+                    raise ValueError(f"{t.id} post_residual: fecha ≥ {sow + timedelta(days=POST_R_MIN_AFTER_SOW_DAYS)}")
+
+            if t.tipo == "post_graminicida":
+                if t.duracion_dias != POST_GRAM_FORWARD_DAYS:
+                    raise ValueError(f"{t.id} post_graminicida: duracion_dias debe ser {POST_GRAM_FORWARD_DAYS}")
+                if t.fecha_inicio < sow:
+                    raise ValueError(f"{t.id} post_graminicida: fecha_inicio ≥ {sow}")
+        return ts
+
+# ------------------- Carga de escenario externo (JSON/CSV) -------------------
+with st.sidebar:
+    st.header("Escenario externo (JSON / CSV)")
+    use_external = st.checkbox("Usar escenario externo", value=False)
+    ext_json = st.file_uploader("escenario.json (todo en uno)", type=["json"], key="esc_json")
+    ext_trat_csv = st.file_uploader("tratamientos.csv (opcional)", type=["csv"], key="esc_trat_csv")
+    st.caption("Si subís JSON, no hace falta el CSV. Si subís ambos, el CSV reemplaza la lista de tratamientos del JSON.")
+
+escenario_ext = None
+if use_external and (ext_json is not None):
+    try:
+        data = json.loads(ext_json.read().decode("utf-8"))
+        escenario_ext = Escenario(**data)
+        st.success("Escenario JSON validado.")
+    except Exception as e:
+        st.error(f"Error validando escenario JSON: {e}")
+        use_external = False
+
+if use_external and escenario_ext is not None and (ext_trat_csv is not None):
+    try:
+        import io as _io
+        dfT = pd.read_csv(_io.BytesIO(ext_trat_csv.read()))
+        trats = []
+        for _,r in dfT.iterrows():
+            estados = str(r["estados"]).split("|") if "estados" in r and pd.notna(r["estados"]) else []
+            dec = Decaimiento(
+                tipo = r.get("decaimiento_tipo","Ninguno"),
+                semivida_dias = int(r["semivida_dias"]) if "semivida_dias" in r and pd.notna(r["semivida_dias"]) else None
+            )
+            trats.append(Tratamiento(
+                id = str(r["id"]),
+                tipo = r["tipo"],
+                fecha_inicio = pd.to_datetime(r["fecha_inicio"]).date(),
+                duracion_dias = int(r["duracion_dias"]),
+                eficiencia_pct = float(r["eficiencia_pct"]),
+                estados = estados,
+                decaimiento = dec,
+                nota = r.get("nota", None)
+            ))
+        escenario_ext.tratamientos = trats
+        st.success("Tratamientos CSV cargados y aplicados al escenario.")
+    except Exception as e:
+        st.error(f"Error leyendo tratamientos.csv: {e}")
+        use_external = False
+
+# ------------ Si hay escenario externo, sobreescribo parámetros ------------
+if use_external and (escenario_ext is not None):
+    try:
+        sow_date = escenario_ext.siembra
+        MAX_PLANTS_CAP = float(escenario_ext.tope_A2_plm2)
+        mode_canopy = "Cobertura dinámica (%)" if escenario_ext.canopia.modo == "Cobertura" else "LAI dinámico"
+        t_lag = escenario_ext.canopia.t_lag
+        t_close = escenario_ext.canopia.t_cierre
+        cov_max = escenario_ext.canopia.cov_max_pct
+        lai_max = escenario_ext.canopia.lai_max
+        k_beer = escenario_ext.canopia.k_beer
+        use_ciec = escenario_ext.canopia.Ciec.usar
+        Ca = escenario_ext.canopia.Ciec.Ca
+        Cs = escenario_ext.canopia.Ciec.Cs
+        LAIhc = escenario_ext.canopia.Ciec.LAIhc
+        st.info(f"Escenario externo activo · Siembra={sow_date} · Tope A2={int(MAX_PLANTS_CAP)} pl·m²")
+    except Exception as e:
+        st.error(f"No se pudieron aplicar parámetros del escenario: {e}")
+        use_external = False
+
+# ========================= Periodo crítico (PC) ========================
+with st.sidebar:
+    st.header("Periodo crítico")
+    use_pc = st.checkbox("Resaltar periodo crítico (11-Sep→15-Nov)", value=False)
+
+year_pc = int(sow_date.year if sow_date else (years.mode().iloc[0] if len(years) else dt.date.today().year))
+PC_START = pd.to_datetime(f"{year_pc}-09-11")
+PC_END   = pd.to_datetime(f"{year_pc}-11-15")
+
+with st.sidebar:
+    st.header("Etiquetas y escalas")
+    show_plants_axis = st.checkbox("Mostrar Plantas·m²·sem⁻¹ (eje derecho)", value=True)
+    show_ciec_curve = st.checkbox("Mostrar curva Ciec (0–1)", value=True)
+    show_nonres_bands = st.checkbox("Marcar bandas de efecto", value=True)
+
+if not (sow_min <= sow_date <= sow_max):
+    st.error("La fecha de siembra debe estar entre el 1 de mayo y el 1 de agosto."); st.stop()
+
+# ============================ FC/LAI + Ciec ===========================
+FC, LAI = compute_canopy(df_plot["fecha"], sow_date, mode_canopy, int(t_lag), int(t_close),
+                         float(cov_max), float(lai_max), float(k_beer))
+if use_ciec:
+    Ca_safe = float(Ca) if float(Ca) > 0 else 1e-6
+    Cs_safe = float(Cs) if float(Cs) > 0 else 1e-6
+    Ciec = (LAI / max(1e-6, float(LAIhc))) * (Ca_safe / Cs_safe)
+    Ciec = np.clip(Ciec, 0.0, 1.0)
 else:
-    st.info("Esperando ejecución de calibración…")
+    Ciec = np.zeros_like(LAI, dtype=float)
+df_ciec = pd.DataFrame({"fecha": df_plot["fecha"], "Ciec": Ciec})
+one_minus_Ciec = np.clip((1.0 - Ciec).astype(float), 0.0, 1.0)
+
+# ===================== Cohortes S1..S4 =====================
+ts = pd.to_datetime(df_plot["fecha"])
+mask_since_sow = (ts.dt.date >= sow_date)
+births = df_plot["EMERREL"].astype(float).clip(lower=0.0).to_numpy()
+births = np.where(mask_since_sow.to_numpy(), births, 0.0)
+births_series = pd.Series(births, index=ts)
+
+def roll_sum_shift(s: pd.Series, win: int, shift_days: int) -> pd.Series:
+    return s.rolling(window=win, min_periods=0).sum().shift(shift_days)
+
+S1_coh = roll_sum_shift(births_series, 6, 1).fillna(0.0)
+S2_coh = roll_sum_shift(births_series, 21, 7).fillna(0.0)
+S3_coh = roll_sum_shift(births_series, 32, 28).fillna(0.0)
+S4_coh = births_series.cumsum().shift(60).fillna(0.0)
+
+FC_S = {"S1": 0.0, "S2": 0.3, "S3": 0.6, "S4": 1.0}
+S1_arr = S1_coh.reindex(ts).to_numpy(float)
+S2_arr = S2_coh.reindex(ts).to_numpy(float)
+S3_arr = S3_coh.reindex(ts).to_numpy(float)
+S4_arr = S4_coh.reindex(ts).to_numpy(float)
+
+# ============ AUC/área y equivalencia =============
+auc_cruda = auc_time(ts, df_plot["EMERREL"].to_numpy(float), mask=mask_since_sow)
+if auc_cruda > 0:
+    factor_area_to_plants = MAX_PLANTS_CAP / auc_cruda
+    conv_caption = f"AUC(EMERREL desde siembra) = {auc_cruda:.4f} → {int(MAX_PLANTS_CAP)} pl·m² (factor={factor_area_to_plants:.4f})"
+else:
+    factor_area_to_plants = None
+    conv_caption = "No se pudo escalar por área (AUC de EMERREL cruda = 0)."
+
+# ============ Aportes por estado (pl·m²·día⁻¹, sin control) ============
+if factor_area_to_plants is not None:
+    ms = mask_since_sow.to_numpy()
+    S1_pl = np.where(ms, S1_arr * one_minus_Ciec * FC_S["S1"] * factor_area_to_plants, 0.0)
+    S2_pl = np.where(ms, S2_arr * one_minus_Ciec * FC_S["S2"] * factor_area_to_plants, 0.0)
+    S3_pl = np.where(ms, S3_arr * one_minus_Ciec * FC_S["S3"] * factor_area_to_plants, 0.0)
+    S4_pl = np.where(ms, S4_arr * one_minus_Ciec * FC_S["S4"] * factor_area_to_plants, 0.0)
+else:
+    S1_pl=S2_pl=S3_pl=S4_pl=np.full(len(ts), np.nan)
+
+# Controles multiplicativos por estado (inicial=1)
+fechas_d = ts.dt.date.values
+ctrl_S1 = np.ones_like(fechas_d, float)
+ctrl_S2 = np.ones_like(fechas_d, float)
+ctrl_S3 = np.ones_like(fechas_d, float)
+ctrl_S4 = np.ones_like(fechas_d, float)
+
+# ================== Panel manual (opcional si NO usás escenario externo) ==================
+with st.sidebar:
+    st.header("Manejo manual (opcional)")
+    min_date = ts.min().date(); max_date = ts.max().date()
+
+    # Presiembra residual (nueva regla: ≤ siembra-14; S1,S2)
+    pre_R_on = st.checkbox("Presiembra residual (S1–S2)", value=False, help="Debe ser ≤ siembra−14")
+    pre_R_date = st.date_input("Fecha presiembra residual", value=min_date, min_value=min_date, max_value=max_date, disabled=not pre_R_on)
+    pre_R_days = st.slider("Residualidad presiembra (días)", 15, 120, 45, 1, disabled=not pre_R_on)
+    ef_pre_R   = st.slider("Eficiencia presiembra (%)", 0, 100, 70, 1, disabled=not pre_R_on)
+
+    # Preemergente residual (nueva regla: ≤ siembra+10; S1,S2)
+    preem_R_on = st.checkbox("Preemergente residual (S1–S2)", value=False, help="Hasta siembra+10")
+    preem_R_date = st.date_input("Fecha preemergente residual", value=max(min_date, sow_date), min_value=min_date, max_value=max_date, disabled=not preem_R_on)
+    preem_R_days = st.slider("Residualidad preemergente (días)", 15, 120, 45, 1, disabled=not preem_R_on)
+    ef_preem_R   = st.slider("Eficiencia preemergente (%)", 0, 100, 70, 1, disabled=not preem_R_on)
+
+    # Post residual (≥ siembra+20; S1..S4 por defecto, pero lo podés ajustar si querés)
+    post_R_on = st.checkbox("Postemergente residual", value=False, help="≥ siembra+20")
+    post_R_date = st.date_input("Fecha post residual", value=max(min_date, sow_date + timedelta(days=20)), min_value=min_date, max_value=max_date, disabled=not post_R_on)
+    post_R_days = st.slider("Residualidad post (días)", 15, 120, 45, 1, disabled=not post_R_on)
+    ef_post_R   = st.slider("Eficiencia post residual (%)", 0, 100, 70, 1, disabled=not post_R_on)
+    states_postR = st.multiselect("Estados afectados (post R)", ["S1","S2","S3","S4"], default=["S1","S2","S3","S4"], disabled=not post_R_on)
+
+    # Post graminicida (ventana fija +10; ≥ siembra)
+    post_G_on = st.checkbox("Post graminicida (+10d)", value=False, help="≥ siembra; ventana fija día 0+10")
+    post_G_date = st.date_input("Fecha post graminicida", value=max(min_date, sow_date), min_value=min_date, max_value=max_date, disabled=not post_G_on)
+    ef_post_G   = st.slider("Eficiencia graminicida (%)", 0, 100, 65, 1, disabled=not post_G_on)
+
+# Validaciones y advertencias
+warnings = []
+if pre_R_on and not (pre_R_date <= sow_date - timedelta(days=PRE_R_MIN_DAYS_BEFORE_SOW)):
+    warnings.append(f"Presiembra residual: debe ser ≤ {sow_date - timedelta(days=PRE_R_MIN_DAYS_BEFORE_SOW)}.")
+if preem_R_on and not (preem_R_date <= sow_date + timedelta(days=PREEM_R_MAX_AFTER_SOW_DAYS)):
+    warnings.append(f"Preemergente residual: debe ser ≤ {sow_date + timedelta(days=PREEM_R_MAX_AFTER_SOW_DAYS)}.")
+if post_R_on and (post_R_date < sow_date + timedelta(days=POST_R_MIN_AFTER_SOW_DAYS)):
+    warnings.append(f"Post residual: debe ser ≥ {sow_date + timedelta(days=POST_R_MIN_AFTER_SOW_DAYS)}.")
+if post_G_on and (post_G_date < sow_date):
+    warnings.append(f"Post graminicida: debe ser ≥ fecha de siembra ({sow_date}).")
+for w in warnings: st.warning(w)
+
+# ---------------- Aplicación de tratamientos (funciones comunes) ----------------
+def apply_efficiency_per_state(weights, eff_pct, states_sel, c1, c2, c3, c4):
+    if eff_pct <= 0 or (not states_sel): return c1, c2, c3, c4
+    reduc = np.clip(1.0 - (eff_pct/100.0)*np.clip(weights,0.0,1.0), 0.0, 1.0)
+    if "S1" in states_sel: np.multiply(c1, reduc, out=c1)
+    if "S2" in states_sel: np.multiply(c2, reduc, out=c2)
+    if "S3" in states_sel: np.multiply(c3, reduc, out=c3)
+    if "S4" in states_sel: np.multiply(c4, reduc, out=c4)
+    return c1, c2, c3, c4
+
+def weights_residual(start_date, dias, decaimiento_tipo="Ninguno", semivida=None):
+    w = np.zeros_like(fechas_d, float)
+    if (not start_date) or (not dias) or (int(dias) <= 0): return w
+    d0 = start_date; d1 = start_date + timedelta(days=int(dias))
+    mask = (fechas_d >= d0) & (fechas_d < d1)
+    if not mask.any(): return w
+    idxs = np.where(mask)[0]
+    t_rel = np.arange(len(idxs), dtype=float)
+    if decaimiento_tipo == "Ninguno":
+        w[idxs] = 1.0
+    elif decaimiento_tipo == "Lineal":
+        L = max(1, len(idxs)); w[idxs] = 1.0 - (t_rel / max(1.0, L - 1))
+    else:
+        lam = math.log(2) / max(1e-6, semivida if semivida else 20)
+        w[idxs] = np.exp(-lam * t_rel)
+    return w
+
+def weights_one_day(date_val):
+    if not date_val: return np.zeros_like(fechas_d, float)
+    d0 = date_val
+    return ((fechas_d >= d0) & (fechas_d < (d0 + timedelta(days=1)))).astype(float)
+
+# ---------------- Aplicar MANEJO MANUAL (si NO hay escenario externo) ----------------
+if not (use_external and (escenario_ext is not None)) and (factor_area_to_plants is not None):
+    # Presiembra residual (S1–S2)
+    if pre_R_on and (pre_R_date <= sow_date - timedelta(days=PRE_R_MIN_DAYS_BEFORE_SOW)):
+        w = weights_residual(pre_R_date, pre_R_days, "Ninguno")
+        ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4 = apply_efficiency_per_state(w, ef_pre_R, ["S1","S2"], ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4)
+
+    # Preemergente residual (S1–S2)
+    if preem_R_on and (preem_R_date <= sow_date + timedelta(days=PREEM_R_MAX_AFTER_SOW_DAYS)):
+        w = weights_residual(preem_R_date, preem_R_days, "Ninguno")
+        ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4 = apply_efficiency_per_state(w, ef_preem_R, ["S1","S2"], ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4)
+
+    # Post residual (S1..S4 según selección)
+    if post_R_on and (post_R_date >= sow_date + timedelta(days=POST_R_MIN_AFTER_SOW_DAYS)):
+        w = weights_residual(post_R_date, post_R_days, "Ninguno")
+        ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4 = apply_efficiency_per_state(w, ef_post_R, states_postR, ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4)
+
+    # Post graminicida (+10)
+    if post_G_on and (post_G_date >= sow_date):
+        w = weights_residual(post_G_date, POST_GRAM_FORWARD_DAYS, "Ninguno")
+        ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4 = apply_efficiency_per_state(w, ef_post_G, ["S1","S2","S3"], ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4)
+
+# ---------------- Aplicar TRATAMIENTOS DEL ESCENARIO EXTERNO ----------------
+def apply_tratamiento_ext(trat, c1, c2, c3, c4, sow):
+    # Validaciones ya pasadas por Pydantic; acá sólo construimos ventana & aplicamos
+    if trat.tipo in ["presiembra_residual","preemergente_residual","post_residual"]:
+        if trat.decaimiento and trat.decaimiento.tipo == "Exponencial":
+            w = weights_residual(trat.fecha_inicio, trat.duracion_dias, "Exponencial", trat.decaimiento.semivida_dias)
+        elif trat.decaimiento and trat.decaimiento.tipo == "Lineal":
+            w = weights_residual(trat.fecha_inicio, trat.duracion_dias, "Lineal")
+        else:
+            w = weights_residual(trat.fecha_inicio, trat.duracion_dias, "Ninguno")
+    elif trat.tipo in ["pre_no_residual","post_no_residual"]:
+        w = weights_one_day(trat.fecha_inicio)
+    elif trat.tipo == "post_graminicida":
+        w = weights_residual(trat.fecha_inicio, POST_GRAM_FORWARD_DAYS, "Ninguno")
+    else:
+        w = np.zeros_like(fechas_d, float)
+    return apply_efficiency_per_state(w, trat.eficiencia_pct, trat.estados, c1, c2, c3, c4)
+
+if (use_external and (escenario_ext is not None)) and (factor_area_to_plants is not None):
+    ctrl_S1[:] = 1.0; ctrl_S2[:] = 1.0; ctrl_S3[:] = 1.0; ctrl_S4[:] = 1.0
+    for trat in escenario_ext.tratamientos:
+        try:
+            ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4 = apply_tratamiento_ext(trat, ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4, escenario_ext.siembra)
+        except Exception as e:
+            st.warning(f"Tratamiento {trat.id} no aplicado: {e}")
+
+# ==================== Series con y sin control + cap A2 ====================
+if factor_area_to_plants is not None:
+    plantas_supresion      = (S1_pl + S2_pl + S3_pl + S4_pl)
+    S1_pl_ctrl = S1_pl * ctrl_S1
+    S2_pl_ctrl = S2_pl * ctrl_S2
+    S3_pl_ctrl = S3_pl * ctrl_S3
+    S4_pl_ctrl = S4_pl * ctrl_S4
+    plantas_supresion_ctrl = (S1_pl_ctrl + S2_pl_ctrl + S3_pl_ctrl + S4_pl_ctrl)
+
+    base_pl_daily = np.where(mask_since_sow.to_numpy(), df_plot["EMERREL"].to_numpy(float) * factor_area_to_plants, 0.0)
+    base_pl_daily_cap = cap_cumulative(base_pl_daily, MAX_PLANTS_CAP, mask_since_sow.to_numpy())
+
+    plantas_supresion_cap      = np.minimum(plantas_supresion, base_pl_daily_cap)
+    plantas_supresion_ctrl_cap = np.minimum(plantas_supresion_ctrl, plantas_supresion_cap)
+
+    # Reescalado proporcional por estado
+    total_ctrl_daily = (S1_pl_ctrl + S2_pl_ctrl + S3_pl_ctrl + S4_pl_ctrl)
+    eps = 1e-12
+    scale = np.where(total_ctrl_daily > eps, np.minimum(1.0, plantas_supresion_ctrl_cap / total_ctrl_daily), 0.0)
+    S1_pl_ctrl_cap = S1_pl_ctrl * scale
+    S2_pl_ctrl_cap = S2_pl_ctrl * scale
+    S3_pl_ctrl_cap = S3_pl_ctrl * scale
+    S4_pl_ctrl_cap = S4_pl_ctrl * scale
+    plantas_supresion_ctrl_cap = S1_pl_ctrl_cap + S2_pl_ctrl_cap + S3_pl_ctrl_cap + S4_pl_ctrl_cap
+else:
+    plantas_supresion_cap = plantas_supresion_ctrl_cap = base_pl_daily_cap = np.full(len(ts), np.nan)
+    S1_pl_ctrl_cap=S2_pl_ctrl_cap=S3_pl_ctrl_cap=S4_pl_ctrl_cap=np.full(len(ts), np.nan)
+
+# Agregación semanal
+df_daily_cap = pd.DataFrame({
+    "fecha": ts,
+    "pl_sin_ctrl_cap": np.where(mask_since_sow.to_numpy(), plantas_supresion_cap, 0.0),
+    "pl_con_ctrl_cap": np.where(mask_since_sow.to_numpy(), plantas_supresion_ctrl_cap, 0.0),
+    "pl_base_cap":     np.where(mask_since_sow.to_numpy(), base_pl_daily_cap, 0.0),
+})
+df_week_cap = df_daily_cap.set_index("fecha").resample("W-MON").sum().reset_index()
+
+# A2 por AUC
+if factor_area_to_plants is not None and auc_cruda > 0:
+    sup_equiv  = np.divide(plantas_supresion_cap,     factor_area_to_plants, out=np.zeros_like(plantas_supresion_cap),     where=(factor_area_to_plants>0))
+    supc_equiv = np.divide(plantas_supresion_ctrl_cap, factor_area_to_plants, out=np.zeros_like(plantas_supresion_ctrl_cap), where=(factor_area_to_plants>0))
+    auc_sup      = auc_time(ts, sup_equiv,  mask=mask_since_sow)
+    auc_sup_ctrl = auc_time(ts, supc_equiv, mask=mask_since_sow)
+    A2_sup_final  = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP * (auc_sup      / auc_cruda))
+    A2_ctrl_final = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP * (auc_sup_ctrl / auc_cruda))
+else:
+    A2_sup_final = A2_ctrl_final = float("nan")
+
+# x y pérdidas
+def perdida_rinde_pct(x): x = np.asarray(x, float); return 0.375 * x / (1.0 + (0.375 * x / 76.639))
+if factor_area_to_plants is not None:
+    X2 = float(np.nansum(plantas_supresion_cap[mask_since_sow]))
+    X3 = float(np.nansum(plantas_supresion_ctrl_cap[mask_since_sow]))
+    loss_x2_pct = float(perdida_rinde_pct(X2)) if np.isfinite(X2) else float("nan")
+    loss_x3_pct = float(perdida_rinde_pct(X3)) if np.isfinite(X3) else float("nan")
+else:
+    X2 = X3 = float("nan"); loss_x2_pct = loss_x3_pct = float("nan")
+
+# ============================== Gráfico 1 (manual) ==============================
+st.subheader(f"📊 Gráfico 1: EMERREL + aportes (cap A2={int(MAX_PLANTS_CAP)}) — Serie semanal (W-MON)")
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=ts, y=df_plot["EMERREL"], mode="lines", name="EMERREL (cruda)"))
+
+layout_kwargs = dict(margin=dict(l=10, r=10, t=40, b=10),
+                     title=f"EMERREL + aportes (izq) y Plantas·m²·semana (der, 0–{SHOW_PLANTS_AXIS_MAX}) · Tope={int(MAX_PLANTS_CAP)}",
+                     xaxis_title="Tiempo", yaxis_title="EMERREL")
+
+if factor_area_to_plants is not None and show_plants_axis:
+    layout_kwargs["yaxis2"] = dict(overlaying="y", side="right",
+                                   title=f"Plantas·m²·sem⁻¹ (cap A2={int(MAX_PLANTS_CAP)})",
+                                   position=1.0, range=[0, SHOW_PLANTS_AXIS_MAX], tick0=0, dtick=20, showgrid=False)
+    fig.add_trace(go.Scatter(x=df_week_cap["fecha"], y=df_week_cap["pl_sin_ctrl_cap"], name="Aporte semanal (sin control, cap)",
+                             yaxis="y2", mode="lines+markers"))
+    fig.add_trace(go.Scatter(x=df_week_cap["fecha"], y=df_week_cap["pl_con_ctrl_cap"], name="Aporte semanal (con control, cap)",
+                             yaxis="y2", mode="lines+markers", line=dict(dash="dot")))
+if use_pc:
+    fig.add_vrect(x0=PC_START, x1=PC_END, line_width=0, fillcolor="MediumPurple", opacity=0.12)
+
+if use_ciec and show_ciec_curve:
+    fig.update_layout(yaxis3=dict(overlaying="y", side="right", title="Ciec (0–1)", position=0.97, range=[0, 1]))
+    fig.add_trace(go.Scatter(x=df_ciec["fecha"], y=df_ciec["Ciec"], mode="lines", name="Ciec", yaxis="y3"))
+
+fig.update_layout(**layout_kwargs)
+st.plotly_chart(fig, use_container_width=True)
+st.caption(conv_caption + f" · A2_sup={A2_sup_final if np.isfinite(A2_sup_final) else float('nan'):.1f} · A2_ctrl={A2_ctrl_final if np.isfinite(A2_ctrl_final) else float('nan'):.1f}")
+
+# ================= Figura 2 (manual): Pérdida (%) vs x =================
+st.subheader("Figura 2 — Pérdida de rendimiento (%) vs. x")
+if np.isfinite(X2) or np.isfinite(X3):
+    x_curve = np.linspace(0.0, MAX_PLANTS_CAP, 400)
+    y_curve = 0.375 * x_curve / (1.0 + (0.375 * x_curve / 76.639))
+    fig_loss = go.Figure()
+    fig_loss.add_trace(go.Scatter(x=x_curve, y=y_curve, mode="lines", name="Modelo pérdida % vs x"))
+    if np.isfinite(X2): fig_loss.add_trace(go.Scatter(x=[X2], y=[loss_x2_pct], mode="markers+text", name="x₂ sin control", text=[f"x₂={X2:.1f}"], textposition="top center"))
+    if np.isfinite(X3): fig_loss.add_trace(go.Scatter(x=[X3], y=[loss_x3_pct], mode="markers+text", name="x₃ con control", text=[f"x₃={X3:.1f}"], textposition="top right"))
+    fig_loss.update_layout(margin=dict(l=10,r=10,t=40,b=10))
+    st.plotly_chart(fig_loss, use_container_width=True)
+else:
+    st.info("No hay valores finitos de x para graficar.")
+
+# ================= Figura 3 (manual): Composición porcentual PC (donut) =================
+st.subheader("Figura 3 — Composición porcentual por estado en el PC")
+mask_pc_days = (ts >= PC_START) & (ts <= PC_END)
+if factor_area_to_plants is None or not np.isfinite(factor_area_to_plants):
+    st.info("AUC cruda = 0 → no se puede escalar a plantas·m²; no es posible calcular aportes en PC.")
+else:
+    mspc = (mask_since_sow & mask_pc_days).to_numpy()
+    a_S1 = float(np.nansum(S1_pl_ctrl_cap[mspc])) if "S1_pl_ctrl_cap" in locals() else 0.0
+    a_S2 = float(np.nansum(S2_pl_ctrl_cap[mspc])) if "S2_pl_ctrl_cap" in locals() else 0.0
+    a_S3 = float(np.nansum(S3_pl_ctrl_cap[mspc])) if "S3_pl_ctrl_cap" in locals() else 0.0
+    a_S4 = float(np.nansum(S4_pl_ctrl_cap[mspc])) if "S4_pl_ctrl_cap" in locals() else 0.0
+    tot  = a_S1 + a_S2 + a_S3 + a_S4
+    labels = ["S1 (FC=0.0)", "S2 (FC=0.3)", "S3 (FC=0.6)", "S4 (FC=1.0)"]
+    if np.isfinite(tot) and tot > 0:
+        pct = 100.0 * np.array([a_S1, a_S2, a_S3, a_S4], float) / tot
+        st.markdown(f"**Total (S1–S4) en PC:** **{tot:,.1f}** pl·m²")
+        df_pc_pct = pd.DataFrame({"Estado": labels, "% del total PC": pct}).sort_values("% del total PC", ascending=False).reset_index(drop=True)
+        st.dataframe(df_pc_pct, use_container_width=True)
+        fig_pc_donut = go.Figure(data=[go.Pie(labels=labels, values=pct, hole=0.5, textinfo="label+percent")])
+        fig_pc_donut.update_layout(margin=dict(l=10, r=10, t=50, b=10))
+        st.plotly_chart(fig_pc_donut, use_container_width=True)
+    else:
+        st.info("Total en PC es 0 o no finito; no se puede calcular porcentaje.")
+
+# ================= Figura 4 — Dinámica semanal S1–S4 (con control + cap) =================
+try:
+    df_states_daily = pd.DataFrame({
+        "fecha": ts,
+        "S1": np.where(mask_since_sow.to_numpy(), S1_pl_ctrl_cap, 0.0),
+        "S2": np.where(mask_since_sow.to_numpy(), S2_pl_ctrl_cap, 0.0),
+        "S3": np.where(mask_since_sow.to_numpy(), S3_pl_ctrl_cap, 0.0),
+        "S4": np.where(mask_since_sow.to_numpy(), S4_pl_ctrl_cap, 0.0),
+    })
+    df_states_week = df_states_daily.set_index("fecha").resample("W-MON").sum().reset_index()
+    st.subheader("Figura 4 — Aportes semanales por estado (con control + cap)")
+    fig_states = go.Figure()
+    for col, name in [("S1","S1 (FC=0.0)"),("S2","S2 (FC=0.3)"),("S3","S3 (FC=0.6)"),("S4","S4 (FC=1.0)")]:
+        fig_states.add_trace(go.Scatter(x=df_states_week["fecha"], y=df_states_week[col], mode="lines", name=name, stackgroup="one"))
+    fig_states.update_layout(margin=dict(l=10, r=10, t=50, b=10))
+    st.plotly_chart(fig_states, use_container_width=True)
+except Exception as e:
+    st.warning(f"No fue posible dibujar la Figura 4: {e}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
