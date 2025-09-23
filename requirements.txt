@@ -6,3 +6,4 @@ requests>=2.31
 openpyxl>=3.1
 scipy>=1.13
 urllib3>=2.2
+pydantic==1.10.15
