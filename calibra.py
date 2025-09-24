@@ -1,15 +1,8 @@
-# Generate v2.4.1 script enforcing accumulation from sowing (clean pre-sow)
-script = r'''# -*- coding: utf-8 -*-
-# PREDWEEM · Calibración v2.4.1
-# Cambio solicitado: la acumulación de plantas (A2) **siempre** comienza en la
-# fecha de siembra (t=0). Se asume lote limpio antes de la siembra, por lo que
-# las emergencias previas no aportan a la suma.
-#
-# Además conserva:
-#  - Curva de pérdida hipérbola rectangular (α, Lmax) con opción de calibrarlos.
-#  - Supresión dinámica con LAIhc calibrable.
-#  - Generador de datos sintéticos.
-#  - Descargas en memoria (no escribe a disco).
+# -*- coding: utf-8 -*-
+# PREDWEEM · Calibración v2.4.1 (patched export)
+# - Acumulación desde siembra (lote limpio pre-siembra)
+# - Opción para calibrar α y Lmax (curva hipérbola rectangular)
+# - Descargas en memoria (no escribe a disco en la app)
 
 import io, json, math, datetime as dt
 from datetime import timedelta, date
@@ -143,7 +136,6 @@ def build_synthetic_excel_v2(n_trials=8, start_all=dt.date(2025,5,1), end_all=dt
             "actua_s1": 1, "actua_s2": 1, "actua_s3": 1, "actua_s4": 0
         })
 
-        # Emergencia: distribución gaussiana, pero la suma se cortará en siembra
         peak = siembra + timedelta(days=int(float(rng.uniform(7, 18))))
         sigma = float(rng.uniform(8, 14))
         vals = []
@@ -221,7 +213,6 @@ def build_daily_control_mask(dates, states, ttos_rows):
 def predict_loss_for_ensayo(row_e, df_emerg, df_ttos,
                             s1, s2, s3,
                             w_states,
-                            # parámetros de canopia (fijos en UI, calibrable LAIhc)
                             t_lag=7, t_close=45, lai_max=3.5, k_beer=0.6, LAIhc=3.5, canopy_mode="LAI",
                             alpha=0.375, Lmax=76.639,
                             cut_at_pc_fin=True):
@@ -250,7 +241,7 @@ def predict_loss_for_ensayo(row_e, df_emerg, df_ttos,
 
     emer_rel = df_emerg["emer_rel"].values.astype(float)
 
-    # ======= CAMBIO CENTRAL: solo cuenta desde siembra =======
+    # ======= Solo cuenta desde siembra (lote limpio antes) =======
     mask_since = np.array([d >= siembra for d in dates], dtype=float)  # piso en t=0
     if cut_at_pc_fin and (pc_fin is not None):
         mask_until = np.array([d <= pc_fin for d in dates], dtype=float)
@@ -258,7 +249,6 @@ def predict_loss_for_ensayo(row_e, df_emerg, df_ttos,
         mask_until = np.ones_like(mask_since)
     eval_mask  = mask_since * mask_until
 
-    # SOLO computar plantas desde siembra (lote limpio antes)
     pl_day = (emer_rel * max_cap) * mask_since
 
     ttos_rows = df_ttos.to_dict(orient="records") if df_ttos is not None else []
@@ -271,7 +261,6 @@ def predict_loss_for_ensayo(row_e, df_emerg, df_ttos,
         e = eff_by_state[i, sidx]
         pl_ctrl[i] *= (1.0 - e)
 
-    # Período de evaluación con piso en siembra
     pc_mask = eval_mask
 
     wS = np.maximum(0, np.array(w_states, dtype=float))
@@ -282,20 +271,16 @@ def predict_loss_for_ensayo(row_e, df_emerg, df_ttos,
         sidx = states[i]
         w_day[i] = 0.0 if sidx is None else wS[sidx]
 
-    # A2 controlado (desde siembra)
     A2_ctrl = float(np.sum(pl_ctrl * w_day * pc_mask))
 
-    # Supresión dinámica
     LAI_t = canopy_LAI_series(dates, siembra, t_lag=t_lag, t_close=t_close, lai_max=lai_max, k_beer=k_beer, mode=canopy_mode)
     Ciec_t = np.clip((LAI_t / max(1e-6, float(LAIhc))) * (Ca / float(Cs)), 0.0, 1.0)
     s_t = 1.0 - Ciec_t
 
-    # g_eq ponderado
     weights = pl_ctrl * w_day * pc_mask
     den = float(np.sum(weights))
     g_eq = float(np.sum(s_t * weights)) / den if den > 0 else 1.0
 
-    # Pérdida con parámetros (alpha, Lmax)
     A2_eff = A2_ctrl * g_eq
     Loss_pred = float(loss_pct_rect_hyperbola(A2_eff, alpha=alpha, Lmax=Lmax))
 
@@ -560,16 +545,7 @@ with st.expander("5) Calibración", expanded=True):
         else:
             st.warning("No hay ensayos válidos para reportar.")
 
-# 6) Exportar este script
-with st.expander("6) Exportar este script", expanded=False):
-    import inspect, sys
-    try:
-        src = inspect.getsource(sys.modules[__name__])
-        offer_download_text("calibra_v2_4_1.py", src, "⬇️ Descargar calibra_v2_4_1.py")
-    except Exception:
-        st.info("No se pudo extraer el código fuente automáticamente en este entorno.")
-
-# --- Exportar este script guardando en /tmp con fallback a descarga ---
+# 6) Exportar este script (SOLO DESCARGA; no escribe a disco)
 with st.expander("Notas", expanded=False):
     st.markdown("""
 - **Política t=0**: Toda la acumulación inicia en **fecha de siembra**; emergencias previas no suman (lote limpio).
@@ -579,25 +555,16 @@ with st.expander("Notas", expanded=False):
 - **Generador sintético** y descargas en memoria incluidos.
 """)
 
+# Botón de descarga del script actual (sin escribir a /mnt/data)
 import inspect, sys
-from pathlib import Path
-
 try:
     src = inspect.getsource(sys.modules["__main__"])
 except Exception:
     src = inspect.getsource(sys.modules[__name__])
 
-try:
-    out = Path("/tmp/calibra_v2_4_1_clean_from_sow.py")
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(src, encoding="utf-8")
-    st.success(f"Archivo guardado en: {out}")
-    st.code(str(out), language="bash")
-except Exception as e:
-    st.warning(f"No se pudo escribir en disco ({e}). Descargá el archivo acá abajo:")
-    st.download_button(
-        "⬇️ Descargar calibra_v2_4_1_clean_from_sow.py",
-        data=src.encode("utf-8"),
-        file_name="calibra_v2_4_1_clean_from_sow.py",
-        mime="text/x-python",
-    )
+st.download_button(
+    "⬇️ Descargar calibra_v2_4_1_clean_from_sow.py",
+    data=src.encode("utf-8"),
+    file_name="calibra_v2_4_1_clean_from_sow.py",
+    mime="text/x-python",
+)
