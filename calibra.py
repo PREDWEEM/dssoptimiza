@@ -1,380 +1,473 @@
 # -*- coding: utf-8 -*-
-"""
-calibra_predweem.py — Calibración completa PREDWEEM (multi‑ensayo + CV)
+# ============================================================
+# PREDWEEM · Módulo de Calibración (Streamlit)
+# - Plantilla Excel (openpyxl) con 3 hojas: ensayos, tratamientos, emergencia
+# - Objetivo: minimizar RMSE de % pérdida de rinde (Obs vs Pred)
+# - Optimizador: Búsqueda aleatoria reproducible (sin SciPy)
+# - Estados (S1..S4) por edad desde siembra (configurables en UI)
+# - Tipos de herbicida: presiembra, preemergente, post_selectivo, graminicida
+# - Eficacias combinadas día/estado con residualidad
+# ============================================================
 
-Características
-- Lee el Excel de plantilla (sheets: metadata, series_EMERREL/EMERAC, intervenciones, observaciones, x_obs, canopy opcional).
-- Arma dataset por id_experimento y permite dos rutas de calibración:
-  (A) Con x_obs → ajusta i y A de la curva hiperbólica de pérdidas.
-  (B) Sin x_obs → estima x a partir de EMERREL/EMERAC + cronograma simple (todas las edades afectadas igual),
-      y ajusta alpha (factor EMERREL→plantas), i y A simultáneamente.
-- Cross‑validation (k‑fold estratificada por id_experimento) para evaluar generalización.
-- Salidas: JSON/CSV con parámetros, métricas globales y por fold; CSV con predicciones por ensayo.
-- Sin dependencias pesadas: usa numpy/pandas + búsqueda aleatoria y refinamiento local.
-
-Limitaciones (para mantenerlo portable)
-- La estimación de x en la ruta (B) es simplificada: no separa S1–S4 ni aplica Ciec explícito.
-  Para calibración fina, integrar con tu app principal (cohortes + Ciec) y usar la misma estructura de orquestación
-  de este script (random search + refine + CV).
-"""
-
-from __future__ import annotations
-import pandas as pd
+import io, json, math, datetime as dt
+from datetime import timedelta, date
 import numpy as np
-import json, math, os, sys, argparse, itertools
-from dataclasses import dataclass
-from typing import Dict, Tuple, Optional, List
+import pandas as pd
+import streamlit as st
+import plotly.graph_objects as go
 
-# --------------------------------------------------
-# Utilidades I/O
-# --------------------------------------------------
+# ------------------------------------------------------------
+# Utilidades de fechas
+# ------------------------------------------------------------
+def to_date(x):
+    if pd.isna(x): return None
+    if isinstance(x, (dt.date, dt.datetime)): return x.date() if isinstance(x, dt.datetime) else x
+    try:
+        return pd.to_datetime(x).date()
+    except Exception:
+        return None
 
-def read_excel_data(path: str):
-    xl = pd.read_excel(path, sheet_name=None)
-    def get(name):
-        return xl.get(name, pd.DataFrame())
-    return (
-        get("metadata"),
-        get("series_EMERREL"),
-        get("series_EMERAC"),
-        get("intervenciones"),
-        get("observaciones"),
-        get("x_obs"),
-        get("canopy"),
-    )
+def daterange(d0, d1):
+    d0, d1 = to_date(d0), to_date(d1)
+    if d0 is None or d1 is None or d1 < d0:
+        return []
+    cur = d0
+    out = []
+    while cur <= d1:
+        out.append(cur)
+        cur += timedelta(days=1)
+    return out
 
+# ------------------------------------------------------------
+# Plantilla Excel
+# ------------------------------------------------------------
+def build_excel_template():
+    """
+    Devuelve bytes de un .xlsx con 3 hojas:
+    - ensayos: 1 fila por ensayo
+    - tratamientos: N filas por ensayo (pueden ser 0..n)
+    - emergencia: serie diaria con emer_rel (0..1) por ensayo
+    """
+    ensayos = pd.DataFrame([{
+        "ensayo_id": "E001",
+        "sitio": "BahiaBlanca",
+        "campaña": "2025",
+        "cultivo": "Trigo",
+        "fecha_siembra": "2025-09-20",
+        "pc_ini": "2025-09-25",
+        "pc_fin": "2025-11-15",
+        "Ciec_const": 0.20,  # supresión por canopia promedio (0..1)
+        "MAX_PLANTS_CAP": 250,  # tope plantas·m2
+        "rend_testigo_kg_ha": 4000,  # rinde sin malezas
+        "rend_observado_kg_ha": 3600  # rinde con manejo observado
+    }])
 
-def ensure_loss_pct(obs: pd.DataFrame) -> pd.DataFrame:
-    obs = obs.copy()
-    if "perdida_pct" not in obs.columns or obs["perdida_pct"].isna().all():
-        if {"rend_trat_kg_ha","rend_testigo_kg_ha"}.issubset(obs.columns):
-            obs["perdida_pct"] = (obs["rend_testigo_kg_ha"] - obs["rend_trat_kg_ha"]) / obs["rend_testigo_kg_ha"] * 100.0
-    return obs
+    tratamientos = pd.DataFrame([
+        # tipo in ["presiembra", "preemergente", "post_selectivo", "graminicida"]
+        {"ensayo_id": "E001", "tipo": "preemergente", "fecha_aplicacion": "2025-09-20",
+         "eficacia_pct": 90, "residual_dias": 10,
+         "actua_s1": 1, "actua_s2": 1, "actua_s3": 0, "actua_s4": 0},
+        {"ensayo_id": "E001", "tipo": "graminicida", "fecha_aplicacion": "2025-10-05",
+         "eficacia_pct": 85, "residual_dias": 10,
+         "actua_s1": 1, "actua_s2": 1, "actua_s3": 1, "actua_s4": 0},
+    ])
 
-# --------------------------------------------------
-# Modelo de pérdida — Recta hiperbólica
-# --------------------------------------------------
+    # Emergencia relativa que suma ~1 en la campaña (ejemplo triangular)
+    fechas = pd.date_range("2025-09-01", "2025-11-30", freq="D")
+    mid = fechas[int(len(fechas)*0.35)]
+    emer = []
+    for f in fechas:
+        # forma triangular simple centrada cerca de siembra
+        w = 1 - abs((f - mid).days) / max(1, len(fechas)*0.35)
+        emer.append(max(0.0, w))
+    emer = np.array(emer)
+    emer_rel = (emer / emer.sum()).round(6)
+    emergencia = pd.DataFrame({
+        "ensayo_id": "E001",
+        "fecha": fechas.date,
+        "emer_rel": emer_rel
+    })
 
-def loss_rect_hyperbola(x, i, A):
-    x = np.asarray(x, float)
-    return (i * x) / (1.0 + (i * x / max(1e-9, A)))
+    buf = io.BytesIO()
+    # Usar openpyxl para evitar dependencia a xlsxwriter
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        ensayos.to_excel(writer, index=False, sheet_name="ensayos")
+        tratamientos.to_excel(writer, index=False, sheet_name="tratamientos")
+        emergencia.to_excel(writer, index=False, sheet_name="emergencia")
+    buf.seek(0)
+    return buf.getvalue()
 
-# --------------------------------------------------
-# Configuración
-# --------------------------------------------------
+# ------------------------------------------------------------
+# Núcleo del modelo (predicción de pérdida)
+# ------------------------------------------------------------
+def assign_state_by_age(age_days, s1=(1,6), s2=(7,27), s3=(28,59)):
+    """
+    Devuelve 0..3 para S1..S4 según edad en días desde siembra.
+    Bordes inclusivos.
+    """
+    if age_days is None or age_days < s1[0]:
+        return None  # antes de nacer
+    if s1[0] <= age_days <= s1[1]: return 0  # S1
+    if s2[0] <= age_days <= s2[1]: return 1  # S2
+    if s3[0] <= age_days <= s3[1]: return 2  # S3
+    return 3  # S4
 
-@dataclass
-class CalibConfig:
-    a2_cap: float = 250.0
-    use_emerac: bool = False
-    emerrel_in_percent: Optional[bool] = None  # None = autodetectar por ensayo
-    k_folds: int = 5
-    seed: int = 123
-    n_random: int = 12000
-    refine_grid: int = 11  # puntos por dimensión en el refino local
-    fit_alpha_when_no_x: bool = True
+def combine_efficacies(effs):
+    """
+    Combinación multiplicativa independiente: 1 - Π(1-ef_i)
+    effs en [0..1].
+    """
+    if not effs: return 0.0
+    prod = 1.0
+    for e in effs:
+        prod *= (1 - max(0.0, min(1.0, e)))
+    return 1 - prod
 
-# --------------------------------------------------
-# Estimación de x (ruta B) — Simple
-# --------------------------------------------------
+def build_daily_control_mask(dates, states, ttos_rows):
+    """
+    Para cada día, devuelve eficacia combinada por estado [S1..S4] en [0..1].
+    - dates: lista de fechas
+    - states: lista de índices de estado por día (0..3 o None)
+    - ttos_rows: lista de dicts con: tipo, fecha_aplicacion, eficacia_pct, residual_dias, actua_s*
+    Reglas simples:
+      presiembra: aplica SOLO antes de siembra (el usuario debe cargar esa fecha)
+      preemergente: desde día de aplicación hasta app+residual
+      post_selectivo y graminicida: desde app hasta app+residual
+    """
+    n = len(dates)
+    eff = np.zeros((n, 4), dtype=float)
 
-def estimate_x_simple(emer_df: pd.DataFrame, meta_row: pd.Series, inter_df: pd.DataFrame, alpha: float, a2_cap: float) -> float:
-    df = emer_df.copy()
-    df = df[df["id_experimento"] == meta_row["id_experimento"]]
-    if df.empty:
-        return np.nan
-    df = df.dropna(subset=["fecha"]).sort_values("fecha")
-
-    # Periodo Crítico desde metadata
-    pc_ini = pd.to_datetime(meta_row.get("pc_inicio")) if "pc_inicio" in meta_row else None
-    pc_fin = pd.to_datetime(meta_row.get("pc_fin")) if "pc_fin" in meta_row else None
-    if pc_ini is None or pc_fin is None or pd.isna(pc_ini) or pd.isna(pc_fin):
-        return np.nan
-
-    # EMERREL a 0..1 si viene en % (autodetección si no fue forzada)
-    emer = df.get("EMERREL")
-    if emer is None or emer.isna().all():
-        return np.nan
-    if emer.max() > 1.01:
-        emer = emer / 100.0
-    df = df.assign(EMERREL=emer)
-
-    df = df[(df["fecha"] >= pc_ini) & (df["fecha"] <= pc_fin)]
-    if df.empty:
-        return 0.0
-
-    fechas = pd.to_datetime(df["fecha"]).dt.date.values
-    base_daily_plants = df["EMERREL"].to_numpy(float) * float(alpha)
-
-    # Intervenciones (todas las edades por igual)
-    inter_loc = inter_df[inter_df["id_experimento"] == meta_row["id_experimento"]].copy()
-    mult = np.ones_like(base_daily_plants, float)
-    for _, r in inter_loc.iterrows():
-        d0 = pd.to_datetime(r.get("fecha")).date() if not pd.isna(r.get("fecha")) else None
-        R = int(r.get("residual_dias", 0) or 0)
-        eff = float(r.get("eficacia_pct", 0) or 0) / 100.0
-        if not d0 or R <= 0 or eff <= 0:
+    # Preprocesar ventanas
+    windows = []
+    for r in ttos_rows:
+        tipo = str(r.get("tipo","")).strip().lower()
+        fapp = to_date(r.get("fecha_aplicacion"))
+        ef = float(r.get("eficacia_pct", 0))/100.0
+        res = int(r.get("residual_dias", 0))
+        mask_states = [int(r.get("actua_s1",0))>0,
+                       int(r.get("actua_s2",0))>0,
+                       int(r.get("actua_s3",0))>0,
+                       int(r.get("actua_s4",0))>0]
+        if fapp is None: 
             continue
-        d1 = d0 + pd.Timedelta(days=R)
-        mask = (fechas >= d0) & (fechas < d1)
-        mult[mask] *= (1.0 - eff)
-
-    daily_ctrl = base_daily_plants * mult
-
-    # Tope A2 (acumulado)
-    cum = 0.0
-    acc = []
-    for v in daily_ctrl:
-        allowed = max(0.0, a2_cap - cum)
-        vv = min(max(0.0, v), allowed)
-        acc.append(vv)
-        cum += vv
-    x = float(np.sum(acc))
-    return x
-
-# --------------------------------------------------
-# Orquestación de calibración
-# --------------------------------------------------
-
-def build_dataset(path_excel: str, cfg: CalibConfig):
-    meta, emerrel, emerac, inter, obs, xobs, canopy = read_excel_data(path_excel)
-    if meta.empty:
-        raise ValueError("Hoja 'metadata' vacía o faltante.")
-    obs = ensure_loss_pct(obs)
-
-    ids = list(dict.fromkeys(meta["id_experimento"].astype(str)))
-    rows = []
-    for _, m in meta.iterrows():
-        ide = str(m["id_experimento"])
-        obs_row = obs[obs["id_experimento"] == ide]
-        if obs_row.empty:
-            continue
-        y_true = float(obs_row.iloc[0]["perdida_pct"]) if "perdida_pct" in obs_row.columns else np.nan
-        if np.isnan(y_true):
-            continue
-
-        # Preferir x_obs si existe
-        x_row = xobs[xobs["id_experimento"] == ide] if not xobs.empty else pd.DataFrame()
-        if not x_row.empty and ("x_pl_m2" in x_row.columns) and (not pd.isna(x_row.iloc[0]["x_pl_m2"])):
-            rows.append({"id": ide, "y": y_true, "x": float(x_row.iloc[0]["x_pl_m2"]), "x_from_emr": False})
+        if tipo == "presiembra":
+            # ventana arbitraria: fapp-res <= fapp (solo antes)
+            start = fapp - timedelta(days=max(0,res))
+            end = fapp
+        elif tipo in ("preemergente","post_selectivo","graminicida"):
+            start = fapp
+            end = fapp + timedelta(days=max(0,res))
         else:
-            # Ruta B: EMERREL/EMERAC
-            if cfg.use_emerac and not emerac.empty and "EMERAC" in emerac.columns:
-                emer_df = emerac.rename(columns={"EMERAC": "EMERREL"}).copy()
-            else:
-                emer_df = emerrel.copy()
-            if emer_df.empty or "EMERREL" not in emer_df.columns:
-                continue
-            # Autodetectar % si es necesario
-            subset = emer_df[emer_df["id_experimento"] == ide]
-            if subset.empty:
-                continue
-            em = subset["EMERREL"]
-            if cfg.emerrel_in_percent is True:
-                emer_df.loc[emer_df["id_experimento"] == ide, "EMERREL"] = em / 100.0
-            elif cfg.emerrel_in_percent is None and em.max() > 1.01:
-                emer_df.loc[emer_df["id_experimento"] == ide, "EMERREL"] = em / 100.0
-
-            x_hat = estimate_x_simple(emer_df, m, inter, alpha=1.0, a2_cap=cfg.a2_cap)
-            if np.isnan(x_hat):
-                continue
-            rows.append({"id": ide, "y": y_true, "x": float(x_hat), "x_from_emr": True})
-
-    if not rows:
-        raise ValueError("No hay filas válidas para calibración. Verificá observaciones/series.")
-    df = pd.DataFrame(rows)
-    return df
-
-# --------------------------------------------------
-# Búsqueda aleatoria + refinamiento local
-# --------------------------------------------------
-
-def random_search(y_true, x_vals, fit_alpha=False, n=10000, seed=123):
-    rng = np.random.default_rng(seed)
-    best = None
-    x_vals = np.asarray(x_vals, float)
-    y_true = np.asarray(y_true, float)
-    for _ in range(int(n)):
-        i = rng.uniform(0.05, 0.8)
-        A = rng.uniform(30.0, 95.0)
-        if fit_alpha:
-            alpha = 10 ** rng.uniform(-1.0, 2.2)  # ~0.1..160
-            y_pred = loss_rect_hyperbola(x_vals * alpha, i, A)
-        else:
-            alpha = None
-            y_pred = loss_rect_hyperbola(x_vals, i, A)
-        mse = float(np.nanmean((y_true - y_pred) ** 2))
-        if (best is None) or (mse < best["mse"]):
-            best = {"i": float(i), "A": float(A), "alpha": (float(alpha) if alpha is not None else None), "mse": mse}
-    return best
-
-
-def local_refine(y_true, x_vals, sol, fit_alpha=False, grid=11):
-    x_vals = np.asarray(x_vals, float)
-    y_true = np.asarray(y_true, float)
-    i0, A0, a0 = sol["i"], sol["A"], sol.get("alpha")
-    grid_i = np.linspace(max(0.01, i0 * 0.6), i0 * 1.4, grid)
-    grid_A = np.linspace(max(5.0, A0 * 0.7), A0 * 1.3, grid)
-    grid_alpha = [a0] if (not fit_alpha or a0 is None) else np.linspace(max(0.01, a0 * 0.5), a0 * 1.5, max(7, grid-2))
-    best = None
-    for i in grid_i:
-        for A in grid_A:
-            for alpha in grid_alpha:
-                y_pred = loss_rect_hyperbola(x_vals * alpha, i, A) if fit_alpha else loss_rect_hyperbola(x_vals, i, A)
-                mse = float(np.nanmean((y_true - y_pred) ** 2))
-                if (best is None) or (mse < best["mse"]):
-                    best = {"i": float(i), "A": float(A), "alpha": (float(alpha) if fit_alpha else None), "mse": mse}
-    return best
-
-# --------------------------------------------------
-# Cross‑validation
-# --------------------------------------------------
-
-def kfold_indices(ids: List[str], k: int, seed: int = 123):
-    rng = np.random.default_rng(seed)
-    uniq = np.array(sorted(list(set(ids))))
-    rng.shuffle(uniq)
-    folds = [list() for _ in range(k)]
-    for i, idv in enumerate(uniq):
-        folds[i % k].append(idv)
-    return folds
-
-
-def fit_and_eval(df: pd.DataFrame, cfg: CalibConfig):
-    # definir si ajustamos alpha
-    fit_alpha = bool(cfg.fit_alpha_when_no_x and df["x_from_emr"].any())
-
-    folds = kfold_indices(df["id"].tolist(), max(2, cfg.k_folds), seed=cfg.seed)
-    all_preds = []
-    fold_summ = []
-
-    for fold_idx, valid_ids in enumerate(folds, 1):
-        is_valid = df["id"].isin(valid_ids)
-        df_train = df.loc[~is_valid].reset_index(drop=True)
-        df_valid = df.loc[is_valid].reset_index(drop=True)
-        if df_train.empty or df_valid.empty:
+            # desconocido: ignorar
             continue
-        y_tr, x_tr = df_train["y"].to_numpy(float), df_train["x"].to_numpy(float)
-        y_va, x_va = df_valid["y"].to_numpy(float), df_valid["x"].to_numpy(float)
+        windows.append((tipo, start, end, ef, mask_states))
 
-        sol = random_search(y_tr, x_tr, fit_alpha=fit_alpha, n=cfg.n_random, seed=cfg.seed + fold_idx)
-        sol = local_refine(y_tr, x_tr, sol, fit_alpha=fit_alpha, grid=cfg.refine_grid)
+    # Para cada día, acumular eficacias por estado
+    for i, d in enumerate(dates):
+        effs_state = [ [] for _ in range(4) ]
+        for tipo, start, end, ef, mask_states in windows:
+            if start <= d <= end:
+                for sidx in range(4):
+                    if mask_states[sidx]:
+                        effs_state[sidx].append(ef)
+        # combinar
+        for sidx in range(4):
+            eff[i, sidx] = combine_efficacies(effs_state[sidx])
+    return eff  # (n_días, 4)
 
-        # predicciones
-        if fit_alpha and sol.get("alpha") is not None:
-            yhat_tr = loss_rect_hyperbola(x_tr * sol["alpha"], sol["i"], sol["A"])
-            yhat_va = loss_rect_hyperbola(x_va * sol["alpha"], sol["i"], sol["A"])
+def predict_loss_for_ensayo(row_e, df_emerg, df_ttos,
+                            s1, s2, s3,
+                            k_loss, w_states, escala_A2=100.0):
+    """
+    row_e: fila de ensayos (siembra, PC, Ciec_const, MAX_PLANTS_CAP, rendidos)
+    df_emerg: sub-dataframe emergencia para ensayo_id (fecha, emer_rel)
+    df_ttos: sub-dataframe tratamientos para ensayo_id
+
+    Retorna: dict con series y Loss_pred (%), A2_ctrl, etc.
+    """
+    siembra = to_date(row_e["fecha_siembra"])
+    pc_ini = to_date(row_e["pc_ini"])
+    pc_fin = to_date(row_e["pc_fin"])
+    Ciec = float(row_e.get("Ciec_const", 0.0))
+    max_cap = float(row_e.get("MAX_PLANTS_CAP", 250))
+
+    if siembra is None or pc_ini is None or pc_fin is None:
+        return {"ok": False, "msg": "Fechas inválidas (siembra/PC)"}
+
+    # Alinear fechas de emergencia al rango [min, max]
+    df_emerg = df_emerg.copy()
+    df_emerg["fecha"] = df_emerg["fecha"].apply(to_date)
+    df_emerg = df_emerg.dropna(subset=["fecha","emer_rel"]).sort_values("fecha")
+    if df_emerg.empty:
+        return {"ok": False, "msg": "Emergencia vacía"}
+
+    dates = list(df_emerg["fecha"].values)
+
+    # Edad desde siembra
+    age = [ (d - siembra).days for d in dates ]
+    # Estado por día
+    states = [ assign_state_by_age(a, s1, s2, s3) for a in age ]
+
+    # Plantas día crudas y con supresión
+    emer_rel = df_emerg["emer_rel"].values.astype(float)
+    pl_day = emer_rel * max_cap
+    pl_sup = pl_day * (1.0 - Ciec)
+
+    # Control diario por estado
+    ttos_rows = df_ttos.to_dict(orient="records") if df_ttos is not None else []
+    eff_by_state = build_daily_control_mask(dates, states, ttos_rows)  # (n,4)
+
+    # Aplicar control según estado del individuo cada día
+    pl_ctrl = pl_sup.copy()
+    for i in range(len(dates)):
+        sidx = states[i]
+        if sidx is None: 
+            continue
+        e = eff_by_state[i, sidx]  # eficacia efectiva aplicable a ese estado
+        pl_ctrl[i] = pl_ctrl[i] * (1.0 - e)
+
+    # Filtro periodo crítico (PC)
+    pc_mask = np.array([1.0 if (pc_ini <= d <= pc_fin) else 0.0 for d in dates])
+
+    # Ponderación por estado
+    wS = np.array(w_states, dtype=float)  # longitud 4
+    wS = np.maximum(0, wS)
+    if wS.sum() == 0:
+        wS = np.array([1,1,1,1], dtype=float)
+
+    w_day = np.zeros(len(dates), dtype=float)
+    for i in range(len(dates)):
+        sidx = states[i]
+        if sidx is None: 
+            w_day[i] = 0.0
         else:
-            yhat_tr = loss_rect_hyperbola(x_tr, sol["i"], sol["A"])
-            yhat_va = loss_rect_hyperbola(x_va, sol["i"], sol["A"])
+            w_day[i] = wS[sidx]
 
-        def metrics(y, yhat):
-            y, yhat = np.asarray(y, float), np.asarray(yhat, float)
-            mse = float(np.nanmean((y - yhat) ** 2))
-            rmse = float(np.sqrt(mse))
-            mae = float(np.nanmean(np.abs(y - yhat)))
-            # R^2 simple
-            ss_res = float(np.nansum((y - yhat) ** 2))
-            ss_tot = float(np.nansum((y - np.nanmean(y)) ** 2))
-            r2 = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else float("nan")
-            return rmse, mae, r2
+    # A2_ctrl: suma en PC ponderada por estado
+    A2_ctrl = float(np.sum(pl_ctrl * w_day * pc_mask))
 
-        rmse_tr, mae_tr, r2_tr = metrics(y_tr, yhat_tr)
-        rmse_va, mae_va, r2_va = metrics(y_va, yhat_va)
+    # Pérdida predicha (%), con forma exponencial saturante
+    k = max(1e-6, float(k_loss))
+    Loss_pred = 100.0 * (1.0 - math.exp(-k * (A2_ctrl / float(escala_A2))))
 
-        fold_summ.append({
-            "fold": fold_idx,
-            "n_train": int(len(y_tr)),
-            "n_valid": int(len(y_va)),
-            "i": sol["i"],
-            "A": sol["A"],
-            "alpha": sol.get("alpha"),
-            "rmse_train": rmse_tr,
-            "mae_train": mae_tr,
-            "r2_train": r2_tr,
-            "rmse_valid": rmse_va,
-            "mae_valid": mae_va,
-            "r2_valid": r2_va,
-        })
-
-        # guardar predicciones por ensayo (valid)
-        for _id, yv, xv, yhat in zip(df_valid["id"], y_va, x_va, yhat_va):
-            all_preds.append({"fold": fold_idx, "id": _id, "y_true": yv, "x": xv, "y_pred": float(yhat)})
-
-    # Re‑entrenar con todo para parámetros finales reportados
-    fit_alpha_full = bool(cfg.fit_alpha_when_no_x and df["x_from_emr"].any())
-    sol_full = random_search(df["y"], df["x"], fit_alpha=fit_alpha_full, n=cfg.n_random, seed=cfg.seed + 999)
-    sol_full = local_refine(df["y"], df["x"], sol_full, fit_alpha=fit_alpha_full, grid=cfg.refine_grid)
-
-    # Métricas globales CV
-    cv_df = pd.DataFrame(fold_summ)
-    preds_df = pd.DataFrame(all_preds)
-    summary = {
-        "i": sol_full["i"],
-        "A": sol_full["A"],
-        "alpha": sol_full.get("alpha"),
-        "cv_rmse_valid_mean": float(cv_df["rmse_valid"].mean()) if not cv_df.empty else float("nan"),
-        "cv_mae_valid_mean": float(cv_df["mae_valid"].mean()) if not cv_df.empty else float("nan"),
-        "cv_r2_valid_mean": float(cv_df["r2_valid"].mean()) if not cv_df.empty else float("nan"),
-        "mode": "fit_iA_with_xobs" if not df["x_from_emr"].any() else "fit_alpha_iA_from_EMERREL",
-        "n_items": int(len(df)),
-        "k_folds": int(len(cv_df)),
+    return {
+        "ok": True,
+        "dates": dates,
+        "pl_day": pl_day,
+        "pl_sup": pl_sup,
+        "pl_ctrl": pl_ctrl,
+        "pc_mask": pc_mask,
+        "states": states,
+        "A2_ctrl": A2_ctrl,
+        "Loss_pred": Loss_pred
     }
-    return summary, cv_df, preds_df
 
-# --------------------------------------------------
-# Main CLI
-# --------------------------------------------------
+# ------------------------------------------------------------
+# Calibración
+# ------------------------------------------------------------
+def loss_metrics(y_true, y_pred):
+    y_true = np.array(y_true, dtype=float)
+    y_pred = np.array(y_pred, dtype=float)
+    rmse = float(np.sqrt(np.mean((y_true - y_pred)**2))) if len(y_true) else np.nan
+    mae  = float(np.mean(np.abs(y_true - y_pred))) if len(y_true) else np.nan
+    return rmse, mae
 
-def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--excel", required=True, help="Ruta al Excel de calibración")
-    p.add_argument("--a2", type=float, default=250.0, help="Tope A2 (pl·m²) para la ruta B")
-    p.add_argument("--use-emerac", action="store_true", help="Usar series_EMERAC en lugar de EMERREL")
-    p.add_argument("--kfolds", type=int, default=5, help="Número de folds para CV")
-    p.add_argument("--seed", type=int, default=123)
-    p.add_argument("--n-random", type=int, default=12000, help="Evaluaciones en la búsqueda aleatoria")
-    p.add_argument("--refine-grid", type=int, default=11, help="Puntos por dimensión en refino local")
-    p.add_argument("--no-fit-alpha", action="store_true", help="No ajustar alpha aunque no haya x_obs")
-    p.add_argument("--emerrel-in-percent", choices=["auto","true","false"], default="auto",
-                   help="Si EMERREL está en %, forzar conversión. 'auto' intenta detectar por ensayo.")
-    args = p.parse_args()
+def random_search(objective_fn, n_iter, bounds, seed=123):
+    """
+    bounds: dict nombre -> (low, high)
+    Devuelve (best_params, best_score)
+    """
+    rng = np.random.default_rng(seed)
+    best, best_score = None, np.inf
+    for _ in range(int(n_iter)):
+        params = {}
+        for k,(lo,hi) in bounds.items():
+            params[k] = rng.uniform(lo, hi)
+        score = objective_fn(params)
+        if score < best_score:
+            best, best_score = params, score
+    return best, best_score
 
-    cfg = CalibConfig(
-        a2_cap=args.a2,
-        use_emerac=args.use_emerac,
-        k_folds=max(2, args.kfolds),
-        seed=args.seed,
-        n_random=max(1000, args.n_random),
-        refine_grid=max(7, args.refine_grid),
-        fit_alpha_when_no_x=(not args.no_fit_alpha),
-        emerrel_in_percent=(None if args.emerrel_in_percent=="auto" else (args.emerrel_in_percent=="true")),
-    )
+# ------------------------------------------------------------
+# Streamlit UI
+# ------------------------------------------------------------
+st.set_page_config(page_title="PREDWEEM · Calibración", layout="wide")
+st.title("PREDWEEM — Módulo de Calibración (% pérdida de rinde)")
 
-    df = build_dataset(args.excel, cfg)
-    summary, cv_df, preds_df = fit_and_eval(df, cfg)
+with st.expander("1) Descargar plantilla Excel", expanded=True):
+    st.write("Completá las 3 hojas: **ensayos**, **tratamientos**, **emergencia**.")
+    tpl = build_excel_template()
+    st.download_button("⬇️ Descargar plantilla.xlsx", data=tpl, file_name="plantilla_calibracion.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.caption("Usa fechas en formato ISO (YYYY-MM-DD). `emer_rel` debería sumar ≈ 1 por ensayo (el script no lo exige, pero es buena práctica).")
 
-    base = os.path.splitext(args.excel)[0]
-    out_json = base + "_params.json"
-    out_csv  = base + "_params.csv"
-    cv_csv   = base + "_cv.csv"
-    preds_csv= base + "_preds.csv"
+with st.expander("2) Subir Excel con datos", expanded=True):
+    up = st.file_uploader("Cargar Excel completado", type=["xlsx"])
+    if up is not None:
+        try:
+            xls = pd.ExcelFile(up)
+            df_e = pd.read_excel(xls, "ensayos")
+            df_t = pd.read_excel(xls, "tratamientos")
+            df_m = pd.read_excel(xls, "emergencia")
+            st.success(f"Cargadas hojas: ensayos({len(df_e)}), tratamientos({len(df_t)}), emergencia({len(df_m)})")
+        except Exception as ex:
+            st.error(f"Error al leer Excel: {ex}")
+            df_e = df_t = df_m = None
+    else:
+        df_e = df_t = df_m = None
 
-    with open(out_json, "w", encoding="utf-8") as f:
-        json.dump(summary, f, ensure_ascii=False, indent=2)
-    pd.DataFrame([summary]).to_csv(out_csv, index=False)
-    cv_df.to_csv(cv_csv, index=False)
-    preds_df.to_csv(preds_csv, index=False)
+with st.expander("3) Configuración del modelo", expanded=True):
+    colA, colB, colC, colD = st.columns(4)
+    s1_ini = colA.number_input("S1 ini (d)", value=1, min_value=0, max_value=30)
+    s1_fin = colB.number_input("S1 fin (d)", value=6, min_value=0, max_value=60)
+    s2_ini = colC.number_input("S2 ini (d)", value=7, min_value=0, max_value=90)
+    s2_fin = colD.number_input("S2 fin (d)", value=27, min_value=0, max_value=120)
+    s3_ini = st.number_input("S3 ini (d)", value=28, min_value=0, max_value=180)
+    s3_fin = st.number_input("S3 fin (d)", value=59, min_value=0, max_value=240)
 
-    print("Guardado:", out_json)
-    print("Guardado:", out_csv)
-    print("Guardado:", cv_csv)
-    print("Guardado:", preds_csv)
-    print("Resumen:")
-    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    st.markdown("**Ponderación por estado (se calibran, pero podés acotar rangos):**")
+    c1,c2,c3,c4 = st.columns(4)
+    w1_lo = c1.number_input("w_S1 min", value=0.5, step=0.1)
+    w1_hi = c1.number_input("w_S1 max", value=2.0, step=0.1)
+    w2_lo = c2.number_input("w_S2 min", value=0.5, step=0.1)
+    w2_hi = c2.number_input("w_S2 max", value=2.0, step=0.1)
+    w3_lo = c3.number_input("w_S3 min", value=0.5, step=0.1)
+    w3_hi = c3.number_input("w_S3 max", value=2.0, step=0.1)
+    w4_lo = c4.number_input("w_S4 min", value=0.1, step=0.1)
+    w4_hi = c4.number_input("w_S4 max", value=1.5, step=0.1)
 
-if __name__ == "__main__":
-    main()
+    st.markdown("**Curva de pérdida:**  Loss% = 100 × (1 − exp(−k_loss × A2_ctrl / escala_A2))")
+    col1, col2 = st.columns(2)
+    k_lo = col1.number_input("k_loss min", value=0.01, step=0.01, format="%.3f")
+    k_hi = col1.number_input("k_loss max", value=0.50, step=0.01, format="%.3f")
+    escala_A2 = col2.number_input("escala_A2 (normaliza A2)", value=100.0, step=10.0)
 
+with st.expander("4) Calibración", expanded=True):
+    n_iter = st.number_input("Iteraciones de búsqueda aleatoria", value=2000, min_value=50, step=100)
+    seed = st.number_input("Seed", value=123, step=1)
+    run = st.button("🚀 Ejecutar calibración")
+
+    if run and (df_e is None or df_m is None):
+        st.warning("Cargá el Excel antes de calibrar.")
+
+    if run and df_e is not None and df_m is not None:
+        # Pre-procesar dataframes
+        df_e = df_e.copy()
+        df_t = df_t.copy() if df_t is not None else pd.DataFrame(columns=["ensayo_id"])
+        df_m = df_m.copy()
+
+        # Calcular pérdida observada (%) si no está
+        if "loss_obs_pct" not in df_e.columns:
+            # si hay rend_testigo y rend_observado
+            if {"rend_testigo_kg_ha","rend_observado_kg_ha"}.issubset(df_e.columns):
+                df_e["loss_obs_pct"] = 100.0 * (1.0 - (df_e["rend_observado_kg_ha"] / df_e["rend_testigo_kg_ha"]))
+            else:
+                st.error("Falta 'loss_obs_pct' o (rend_testigo_kg_ha, rend_observado_kg_ha) en ensayos.")
+                st.stop()
+
+        # Bounds para random search
+        bounds = {
+            "k_loss": (k_lo, k_hi),
+            "w_S1": (w1_lo, w1_hi),
+            "w_S2": (w2_lo, w2_hi),
+            "w_S3": (w3_lo, w3_hi),
+            "w_S4": (w4_lo, w4_hi),
+        }
+
+        S1 = (int(s1_ini), int(s1_fin))
+        S2 = (int(s2_ini), int(s2_fin))
+        S3 = (int(s3_ini), int(s3_fin))
+
+        # Objetivo: RMSE global
+        def objective(params):
+            k = params["k_loss"]
+            wS = [params["w_S1"], params["w_S2"], params["w_S3"], params["w_S4"]]
+            preds, obs = [], []
+            for _, row in df_e.iterrows():
+                ens_id = str(row["ensayo_id"])
+                sub_m = df_m[df_m["ensayo_id"]==ens_id]
+                sub_t = df_t[df_t["ensayo_id"]==ens_id] if df_t is not None else pd.DataFrame(columns=["ensayo_id"])
+                res = predict_loss_for_ensayo(row, sub_m, sub_t, S1, S2, S3, k, wS, escala_A2=escala_A2)
+                if not res["ok"]: 
+                    continue
+                preds.append(res["Loss_pred"])
+                obs.append(float(row["loss_obs_pct"]))
+            if not preds:
+                return np.inf
+            rmse,_ = loss_metrics(obs, preds)
+            return rmse
+
+        with st.spinner("Calibrando..."):
+            best, best_rmse = random_search(objective, n_iter=n_iter, bounds=bounds, seed=int(seed))
+
+        st.success("¡Listo!")
+        st.write("**Mejores parámetros:**")
+        st.json(best)
+        st.write(f"**RMSE (global):** {best_rmse:.3f}")
+
+        # Reconstruir resultados por ensayo con el mejor set
+        k = best["k_loss"]
+        wS = [best["w_S1"], best["w_S2"], best["w_S3"], best["w_S4"]]
+        rows = []
+        for _, row in df_e.iterrows():
+            ens_id = str(row["ensayo_id"])
+            sub_m = df_m[df_m["ensayo_id"]==ens_id]
+            sub_t = df_t[df_t["ensayo_id"]==ens_id] if df_t is not None else pd.DataFrame(columns=["ensayo_id"])
+            res = predict_loss_for_ensayo(row, sub_m, sub_t, S1, S2, S3, k, wS, escala_A2=escala_A2)
+            if not res["ok"]:
+                rows.append({"ensayo_id": ens_id, "ok": False, "msg": res.get("msg","")})
+                continue
+            rows.append({
+                "ensayo_id": ens_id,
+                "ok": True,
+                "A2_ctrl": res["A2_ctrl"],
+                "Loss_pred_pct": res["Loss_pred"],
+                "Loss_obs_pct": float(row["loss_obs_pct"])
+            })
+        df_res = pd.DataFrame(rows)
+        df_val = df_res[df_res["ok"]==True].copy()
+        if not df_val.empty:
+            rmse, mae = loss_metrics(df_val["Loss_obs_pct"], df_val["Loss_pred_pct"])
+            st.write(f"**RMSE validación:** {rmse:.3f}  |  **MAE:** {mae:.3f}")
+
+            # Tabla
+            st.dataframe(df_val[["ensayo_id","A2_ctrl","Loss_obs_pct","Loss_pred_pct"]].round(3), use_container_width=True)
+
+            # Scatter Obs vs Pred
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=df_val["Loss_obs_pct"], y=df_val["Loss_pred_pct"],
+                mode="markers+text",
+                text=df_val["ensayo_id"], textposition="top center",
+                name="Ensayos"
+            ))
+            maxi = float(max(df_val["Loss_obs_pct"].max(), df_val["Loss_pred_pct"].max(), 1.0))
+            fig.add_trace(go.Scatter(x=[0,maxi], y=[0,maxi], mode="lines", name="1:1", line=dict(dash="dash")))
+            fig.update_layout(
+                title="Pérdida de rinde: Observado vs Predicho",
+                xaxis_title="Observado (%)",
+                yaxis_title="Predicho (%)",
+                height=500
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Descargar CSV resultados
+            csv = df_val.to_csv(index=False).encode("utf-8")
+            st.download_button("💾 Descargar resultados.csv", data=csv, file_name="calibracion_resultados.csv", mime="text/csv")
+        else:
+            st.warning("No hay ensayos válidos para reportar.")
+
+with st.expander("Notas y supuestos del modelo", expanded=False):
+    st.markdown("""
+- `emer_rel` se interpreta como **proporción diaria** de nacimiento (≈ distrib. que suma 1).  
+- `MAX_PLANTS_CAP` reescala `emer_rel` a **plantas·m²/día** en ausencia de supresión y control.  
+- La **supresión** se aplica como factor constante `1 − Ciec_const`.  
+- El **control químico** combina eficacias independientes por día/estado:  
+  `ef_total = 1 − Π(1 − ef_i)` (con ventanas por `fecha_aplicacion` y `residual_dias`).  
+- Estados por edad (configurables): por defecto S1=1–6d, S2=7–27d, S3=28–59d, S4=60+d.  
+- `A2_ctrl` es la suma, dentro del **periodo crítico**, de `pl_ctrl × w_estado`.  
+- Curva de pérdida: `Loss% = 100 × (1 − exp(−k_loss × A2_ctrl / escala_A2))`.  
+- Parámetros calibrados: `k_loss`, `w_S1..w_S4` (acotados por UI).  
+- **Extensiones**: Ciec dinámico diario, cohortes explícitas, grillas y recocido, validación cruzada, etc.
+""")
 
 
