@@ -569,6 +569,7 @@ with st.expander("6) Exportar este script", expanded=False):
     except Exception:
         st.info("No se pudo extraer el código fuente automáticamente en este entorno.")
 
+# --- Exportar este script guardando en /tmp con fallback a descarga ---
 with st.expander("Notas", expanded=False):
     st.markdown("""
 - **Política t=0**: Toda la acumulación inicia en **fecha de siembra**; emergencias previas no suman (lote limpio).
@@ -577,8 +578,26 @@ with st.expander("Notas", expanded=False):
 - **Supresión dinámica**: `Ciec(t) = (LAI(t)/LAIhc) · (Ca/Cs)`; `g_eq` ponderado.
 - **Generador sintético** y descargas en memoria incluidos.
 """)
-'''
-path = "/mnt/data/calibra_v2_4_1_clean_from_sow.py"
-with open(path, "w", encoding="utf-8") as f:
-    f.write(script)
-path
+
+import inspect, sys
+from pathlib import Path
+
+try:
+    src = inspect.getsource(sys.modules["__main__"])
+except Exception:
+    src = inspect.getsource(sys.modules[__name__])
+
+try:
+    out = Path("/tmp/calibra_v2_4_1_clean_from_sow.py")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(src, encoding="utf-8")
+    st.success(f"Archivo guardado en: {out}")
+    st.code(str(out), language="bash")
+except Exception as e:
+    st.warning(f"No se pudo escribir en disco ({e}). Descargá el archivo acá abajo:")
+    st.download_button(
+        "⬇️ Descargar calibra_v2_4_1_clean_from_sow.py",
+        data=src.encode("utf-8"),
+        file_name="calibra_v2_4_1_clean_from_sow.py",
+        mime="text/x-python",
+    )
