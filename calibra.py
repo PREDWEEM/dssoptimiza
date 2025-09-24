@@ -1,10 +1,15 @@
-# -*- coding: utf-8 -*-
-# PREDWEEM · Calibración v2.4
-# - Igual a v2.3 (curva de pérdida original = hipérbola rectangular)
-# - + Opción para **calibrar α y Lmax** (por defecto desactivado para mantener identidad con el original)
+# Generate v2.4.1 script enforcing accumulation from sowing (clean pre-sow)
+script = r'''# -*- coding: utf-8 -*-
+# PREDWEEM · Calibración v2.4.1
+# Cambio solicitado: la acumulación de plantas (A2) **siempre** comienza en la
+# fecha de siembra (t=0). Se asume lote limpio antes de la siembra, por lo que
+# las emergencias previas no aportan a la suma.
 #
-# Pérdida(%):  Loss(x; α, Lmax) = (α * x) / (1 + (α * x / Lmax))
-# Supresión:   Ciec(t) = (LAI(t)/LAIhc) * (Ca/Cs);  g_eq = ⟨1 - Ciec(t)⟩_ponderado
+# Además conserva:
+#  - Curva de pérdida hipérbola rectangular (α, Lmax) con opción de calibrarlos.
+#  - Supresión dinámica con LAIhc calibrable.
+#  - Generador de datos sintéticos.
+#  - Descargas en memoria (no escribe a disco).
 
 import io, json, math, datetime as dt
 from datetime import timedelta, date
@@ -62,9 +67,9 @@ def build_excel_template_v2() -> bytes:
         "sitio": "BahiaBlanca",
         "campaña": "2025",
         "cultivo": "Trigo",
-        "fecha_siembra": "2025-09-20",
-        "pc_ini": "2025-09-25",
-        "pc_fin": "2025-11-15",
+        "fecha_siembra": "2025-06-15",
+        "pc_ini": "2025-06-22",
+        "pc_fin": "2025-08-31",
         "Ca": 250,
         "Cs": 250,
         "MAX_PLANTS_CAP": 250,
@@ -72,12 +77,12 @@ def build_excel_template_v2() -> bytes:
         "rend_observado_kg_ha": 3600
     }])
     tratamientos = pd.DataFrame([
-        {"ensayo_id": "E001", "tipo": "preemergente", "fecha_aplicacion": "2025-09-20",
+        {"ensayo_id": "E001", "tipo": "preemergente", "fecha_aplicacion": "2025-06-15",
          "eficacia_pct": 90, "residual_dias": 10, "actua_s1": 1, "actua_s2": 1, "actua_s3": 0, "actua_s4": 0},
-        {"ensayo_id": "E001", "tipo": "graminicida", "fecha_aplicacion": "2025-10-05",
+        {"ensayo_id": "E001", "tipo": "graminicida", "fecha_aplicacion": "2025-07-01",
          "eficacia_pct": 85, "residual_dias": 10, "actua_s1": 1, "actua_s2": 1, "actua_s3": 1, "actua_s4": 0},
     ])
-    fechas = pd.date_range("2025-09-01", "2025-11-30", freq="D")
+    fechas = pd.date_range("2025-05-01", "2025-09-15", freq="D")
     mid = fechas[int(len(fechas)*0.35)]
     emer = []
     for f in fechas:
@@ -94,7 +99,7 @@ def build_excel_template_v2() -> bytes:
     return buf.getvalue()
 
 # ----------------------- Generador sintético v2 -----------------------
-def build_synthetic_excel_v2(n_trials=8, start_all=dt.date(2025,9,1), end_all=dt.date(2025,11,30),
+def build_synthetic_excel_v2(n_trials=8, start_all=dt.date(2025,5,1), end_all=dt.date(2025,9,15),
                              Cs_choices=(220,250,280,300), cap_choices=(250,300),
                              loss_range=(6,28), seed=20250924) -> tuple[bytes, pd.DataFrame]:
     rng = np.random.default_rng(seed)
@@ -103,9 +108,9 @@ def build_synthetic_excel_v2(n_trials=8, start_all=dt.date(2025,9,1), end_all=dt
 
     ensayos_rows = []; trat_rows = []; emer_blocks = []
     for i, eid in enumerate(trial_ids):
-        siembra = start_all + timedelta(days=int(11 + 3*i))
+        siembra = start_all + timedelta(days=int(15 + 4*i))
         pc_ini  = siembra + timedelta(days=int(7 + rng.integers(0, 3)))
-        pc_fin  = siembra + timedelta(days=int(55 + rng.integers(0, 6)))
+        pc_fin  = siembra + timedelta(days=int(75 + rng.integers(0, 6)))
 
         Cs = int(rng.choice(Cs_choices))
         Ca = int(max(120, float(rng.normal(Cs, 25))))
@@ -132,12 +137,13 @@ def build_synthetic_excel_v2(n_trials=8, start_all=dt.date(2025,9,1), end_all=dt
         })
         trat_rows.append({
             "ensayo_id": eid, "tipo": "graminicida",
-            "fecha_aplicacion": (siembra + timedelta(days=int(float(rng.uniform(10, 20))))).isoformat(),
+            "fecha_aplicacion": (siembra + timedelta(days=int(float(rng.uniform(10, 25))))).isoformat(),
             "eficacia_pct": int(float(rng.uniform(72, 90))),
             "residual_dias": int(float(rng.uniform(7, 14))),
             "actua_s1": 1, "actua_s2": 1, "actua_s3": 1, "actua_s4": 0
         })
 
+        # Emergencia: distribución gaussiana, pero la suma se cortará en siembra
         peak = siembra + timedelta(days=int(float(rng.uniform(7, 18))))
         sigma = float(rng.uniform(8, 14))
         vals = []
@@ -194,7 +200,7 @@ def build_daily_control_mask(dates, states, ttos_rows):
                        int(r.get("actua_s2",0))>0,
                        int(r.get("actua_s3",0))>0,
                        int(r.get("actua_s4",0))>0]
-        if fapp is None: 
+        if fapp is None:
             continue
         if tipo == "presiembra":
             start = fapp - dt.timedelta(days=max(0,res)); end = fapp
@@ -217,7 +223,8 @@ def predict_loss_for_ensayo(row_e, df_emerg, df_ttos,
                             w_states,
                             # parámetros de canopia (fijos en UI, calibrable LAIhc)
                             t_lag=7, t_close=45, lai_max=3.5, k_beer=0.6, LAIhc=3.5, canopy_mode="LAI",
-                            alpha=0.375, Lmax=76.639):
+                            alpha=0.375, Lmax=76.639,
+                            cut_at_pc_fin=True):
     siembra = to_date(row_e["fecha_siembra"])
     pc_ini  = to_date(row_e["pc_ini"])
     pc_fin  = to_date(row_e["pc_fin"])
@@ -228,8 +235,8 @@ def predict_loss_for_ensayo(row_e, df_emerg, df_ttos,
     if any(pd.isna(v) for v in [Ca, Cs]) or Cs <= 0:
         return {"ok": False, "msg": "Faltan Ca/Cs o Cs<=0"}
 
-    if siembra is None or pc_ini is None or pc_fin is None:
-        return {"ok": False, "msg": "Fechas inválidas (siembra/PC)"}
+    if siembra is None:
+        return {"ok": False, "msg": "Falta fecha de siembra"}
 
     df_emerg = df_emerg.copy()
     df_emerg["fecha"] = df_emerg["fecha"].apply(to_date)
@@ -242,19 +249,30 @@ def predict_loss_for_ensayo(row_e, df_emerg, df_ttos,
     states= [assign_state_by_age(a, s1, s2, s3) for a in age]
 
     emer_rel = df_emerg["emer_rel"].values.astype(float)
-    pl_day   = emer_rel * max_cap
+
+    # ======= CAMBIO CENTRAL: solo cuenta desde siembra =======
+    mask_since = np.array([d >= siembra for d in dates], dtype=float)  # piso en t=0
+    if cut_at_pc_fin and (pc_fin is not None):
+        mask_until = np.array([d <= pc_fin for d in dates], dtype=float)
+    else:
+        mask_until = np.ones_like(mask_since)
+    eval_mask  = mask_since * mask_until
+
+    # SOLO computar plantas desde siembra (lote limpio antes)
+    pl_day = (emer_rel * max_cap) * mask_since
 
     ttos_rows = df_ttos.to_dict(orient="records") if df_ttos is not None else []
     eff_by_state = build_daily_control_mask(dates, states, ttos_rows)
     pl_ctrl = pl_day.copy()
     for i in range(len(dates)):
         sidx = states[i]
-        if sidx is None: 
+        if sidx is None:
             continue
         e = eff_by_state[i, sidx]
         pl_ctrl[i] *= (1.0 - e)
 
-    pc_mask = np.array([1.0 if (pc_ini <= d <= pc_fin) else 0.0 for d in dates])
+    # Período de evaluación con piso en siembra
+    pc_mask = eval_mask
 
     wS = np.maximum(0, np.array(w_states, dtype=float))
     if wS.sum() == 0: wS = np.array([1,1,1,1], dtype=float)
@@ -264,7 +282,7 @@ def predict_loss_for_ensayo(row_e, df_emerg, df_ttos,
         sidx = states[i]
         w_day[i] = 0.0 if sidx is None else wS[sidx]
 
-    # A2 controlado
+    # A2 controlado (desde siembra)
     A2_ctrl = float(np.sum(pl_ctrl * w_day * pc_mask))
 
     # Supresión dinámica
@@ -303,8 +321,8 @@ def random_search(objective_fn, n_iter, bounds, seed=123):
     return best, best_score
 
 # ----------------------- UI -----------------------
-st.set_page_config(page_title="PREDWEEM · Calibración v2.4", layout="wide")
-st.title("PREDWEEM — Calibración v2.4 (curva original + opción de calibrar α/Lmax)")
+st.set_page_config(page_title="PREDWEEM · Calibración v2.4.1", layout="wide")
+st.title("PREDWEEM — Calibración v2.4.1 (acumulación desde siembra; lote limpio pre-siembra)")
 
 # 1) Plantilla y 1b) Generador sintético
 with st.expander("1) Descargar plantilla Excel", expanded=False):
@@ -399,13 +417,16 @@ with st.expander("5) Calibración", expanded=True):
     LAIhc_hi = colh2.number_input("LAIhc max", value=6.0, step=0.1)
 
     st.divider()
-    st.markdown("**Curva de pérdida** (por defecto fija en α=0.375, Lmax=76.639 para replicar el original)")
+    st.markdown("**Curva de pérdida** (por defecto α=0.375, Lmax=76.639)")
     calibrate_curve = st.checkbox("Calibrar α y Lmax", value=False)
     colp1, colp2 = st.columns(2)
     alpha_lo = colp1.number_input("α min", value=0.10, step=0.01, format="%.3f")
     alpha_hi = colp1.number_input("α max", value=0.80, step=0.01, format="%.3f")
     Lmax_lo  = colp2.number_input("Lmax min", value=40.0, step=1.0)
     Lmax_hi  = colp2.number_input("Lmax max", value=120.0, step=1.0)
+
+    cut_at_pc_fin = st.checkbox("Cortar acumulación en pc_fin (techo)", value=True,
+                                help="Siempre comienza en siembra. Si lo desactivás, suma hasta el final del dataset.")
 
     run = st.button("🚀 Ejecutar calibración")
 
@@ -456,7 +477,8 @@ with st.expander("5) Calibración", expanded=True):
                                               lai_max=float(lai_max), k_beer=float(k_beer),
                                               LAIhc=float(LAIhc_p),
                                               canopy_mode="LAI" if canopy_mode=="LAI" else "COVER",
-                                              alpha=alpha_p, Lmax=Lmax_p)
+                                              alpha=alpha_p, Lmax=Lmax_p,
+                                              cut_at_pc_fin=bool(cut_at_pc_fin))
                 if res["ok"]:
                     preds.append(res["Loss_pred"])
                     obs.append(float(row["loss_obs_pct"]))
@@ -489,7 +511,8 @@ with st.expander("5) Calibración", expanded=True):
                                           lai_max=float(lai_max), k_beer=float(k_beer),
                                           LAIhc=float(LAIhc_p),
                                           canopy_mode="LAI" if canopy_mode=="LAI" else "COVER",
-                                          alpha=alpha_p, Lmax=Lmax_p)
+                                          alpha=alpha_p, Lmax=Lmax_p,
+                                          cut_at_pc_fin=bool(cut_at_pc_fin))
             if not res["ok"]:
                 rows.append({"ensayo_id": ens_id, "ok": False, "msg": res.get("msg","")})
                 continue
@@ -528,12 +551,12 @@ with st.expander("5) Calibración", expanded=True):
             fig2.add_trace(go.Scatter(x=x_curve, y=y_curve, mode="lines", name=f"Pérdida % (α={alpha_p:.3f}, Lmax={Lmax_p:.1f})"))
             fig2.add_trace(go.Scatter(x=df_val["A2_eff"], y=df_val["Loss_pred_pct"], mode="markers+text",
                                       text=df_val["ensayo_id"], textposition="top center", name="Ensayos"))
-            fig2.update_layout(title="Pérdida (%) vs A2_eff (curva calibrada)",
+            fig2.update_layout(title="Pérdida (%) vs A2_eff (acumulación desde siembra)",
                                xaxis_title="A2_eff (pl·m²)", yaxis_title="Pérdida (%)", height=500)
             st.plotly_chart(fig2, use_container_width=True)
 
             csv = df_val.to_csv(index=False).encode("utf-8")
-            offer_download_bytes("calibracion_resultados_v2_4.csv", csv, "💾 Descargar resultados.csv", "text/csv")
+            offer_download_bytes("calibracion_resultados_v2_4_1.csv", csv, "💾 Descargar resultados.csv", "text/csv")
         else:
             st.warning("No hay ensayos válidos para reportar.")
 
@@ -542,14 +565,20 @@ with st.expander("6) Exportar este script", expanded=False):
     import inspect, sys
     try:
         src = inspect.getsource(sys.modules[__name__])
-        offer_download_text("calibra_v2_4.py", src, "⬇️ Descargar calibra_v2_4.py")
+        offer_download_text("calibra_v2_4_1.py", src, "⬇️ Descargar calibra_v2_4_1.py")
     except Exception:
         st.info("No se pudo extraer el código fuente automáticamente en este entorno.")
 
 with st.expander("Notas", expanded=False):
     st.markdown("""
-- **Curva de pérdida**: `Loss%(x) = (α·x) / (1 + (α·x / Lmax))` (por defecto α=0.375, Lmax=76.639 como el original).
-- **Toggle** “Calibrar α y Lmax” permite ajustar ambos parámetros junto con `LAIhc` y `w_S1..w_S4`.
+- **Política t=0**: Toda la acumulación inicia en **fecha de siembra**; emergencias previas no suman (lote limpio).
+- **Techo temporal**: Opción para **cortar en `pc_fin`** (activada por defecto). Si la desactivás, suma hasta el final del dataset.
+- **Curva de pérdida**: `Loss%(x) = (α·x) / (1 + (α·x / Lmax))` con toggle para calibrar `α` y `Lmax`.
 - **Supresión dinámica**: `Ciec(t) = (LAI(t)/LAIhc) · (Ca/Cs)`; `g_eq` ponderado.
-- **Generador sintético** integrado. Descargas 100% en memoria.
+- **Generador sintético** y descargas en memoria incluidos.
 """)
+'''
+path = "/mnt/data/calibra_v2_4_1_clean_from_sow.py"
+with open(path, "w", encoding="utf-8") as f:
+    f.write(script)
+path
