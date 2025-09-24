@@ -1,5 +1,4 @@
-# Create an updated Streamlit script (v2.2) that adds an in-app generator for a synthetic multi-ensayo Excel
-script = r'''# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # PREDWEEM · Calibración v2.2 (con generador de datos sintéticos)
 # - v2.1 + pestaña para generar un Excel multi-ensayo (sin Ciec_const; con Ca/Cs)
 # - Descargas en memoria; LAIhc calibrable; supresión dinámica Ciec(t)
@@ -523,10 +522,3 @@ with st.expander("Notas", expanded=False):
 - **Generador sintético:** crea un Excel multi-ensayo con hojas `ensayos`, `tratamientos`, `emergencia` listo para cargar.
 - Descargas 100% en memoria con `st.download_button`.
 """)
-'''
-path = "/mnt/data/calibra_v2_2_full.py"
-with open(path, "w", encoding="utf-8") as f:
-    f.write(script)
-path
-
-
