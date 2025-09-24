@@ -1,48 +1,10 @@
-# The previous cell reset cleared state. Recreate both files now.
-import numpy as np, pandas as pd, io
+# -*- coding: utf-8 -*-
+# PREDWEEM · Calibración v2 (sin Ciec_const; con Ca/Cs · plantilla en memoria)
+# - Hojas Excel: ensayos (Ca, Cs, MAX_PLANTS_CAP, rendidos), tratamientos, emergencia
+# - Modelo: A2_ctrl → A2_eff = A2_ctrl * g(Ca,Cs,β), g = exp(-β*(Ca/Cs-1))
+# - Calibra: k_loss, w_S1..w_S4, beta_crop (random search)
+# - Objetivo: minimizar RMSE de % pérdida (Obs vs Pred)
 
-# Build Excel template again
-def build_excel_template_v2():
-    ensayos = pd.DataFrame([{
-        "ensayo_id": "E001",
-        "sitio": "BahiaBlanca",
-        "campaña": "2025",
-        "cultivo": "Trigo",
-        "fecha_siembra": "2025-09-20",
-        "pc_ini": "2025-09-25",
-        "pc_fin": "2025-11-15",
-        "Ca": 250,
-        "Cs": 250,
-        "MAX_PLANTS_CAP": 250,
-        "rend_testigo_kg_ha": 4000,
-        "rend_observado_kg_ha": 3600
-    }])
-    tratamientos = pd.DataFrame([
-        {"ensayo_id": "E001", "tipo": "preemergente", "fecha_aplicacion": "2025-09-20",
-         "eficacia_pct": 90, "residual_dias": 10, "actua_s1": 1, "actua_s2": 1, "actua_s3": 0, "actua_s4": 0},
-        {"ensayo_id": "E001", "tipo": "graminicida", "fecha_aplicacion": "2025-10-05",
-         "eficacia_pct": 85, "residual_dias": 10, "actua_s1": 1, "actua_s2": 1, "actua_s3": 1, "actua_s4": 0},
-    ])
-    fechas = pd.date_range("2025-09-01", "2025-11-30", freq="D")
-    mid = fechas[int(len(fechas)*0.35)]
-    emer = []
-    for f in fechas:
-        w = 1 - abs((f - mid).days) / max(1, len(fechas)*0.35)
-        emer.append(max(0.0, w))
-    emer_rel = (np.array(emer) / np.sum(emer)).round(6)
-    emergencia = pd.DataFrame({"ensayo_id": "E001", "fecha": fechas.date, "emer_rel": emer_rel})
-    path = "/mnt/data/plantilla_calibracion_v2.xlsx"
-    with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        ensayos.to_excel(writer, index=False, sheet_name="ensayos")
-        tratamientos.to_excel(writer, index=False, sheet_name="tratamientos")
-        emergencia.to_excel(writer, index=False, sheet_name="emergencia")
-    return path
-
-tpl_path = build_excel_template_v2()
-
-# Create the Streamlit script file
-script = """# -*- coding: utf-8 -*-
-# PREDWEEM Calibración v2 (Ca/Cs; sin Ciec_const)
 import io, json, math, datetime as dt
 from datetime import timedelta, date
 import numpy as np
@@ -50,6 +12,7 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 
+# ----------------------- Utilidades de fecha -----------------------
 def to_date(x):
     if pd.isna(x): return None
     if isinstance(x, (dt.date, dt.datetime)): return x.date() if isinstance(x, dt.datetime) else x
@@ -58,7 +21,9 @@ def to_date(x):
     except Exception:
         return None
 
-def build_excel_template():
+# ------------------------- Plantilla Excel -------------------------
+def build_excel_template_v2() -> bytes:
+    """Genera la plantilla v2 en memoria y devuelve bytes del .xlsx."""
     ensayos = pd.DataFrame([{
         "ensayo_id": "E001",
         "sitio": "BahiaBlanca",
@@ -67,18 +32,21 @@ def build_excel_template():
         "fecha_siembra": "2025-09-20",
         "pc_ini": "2025-09-25",
         "pc_fin": "2025-11-15",
-        "Ca": 250,
-        "Cs": 250,
-        "MAX_PLANTS_CAP": 250,
+        "Ca": 250,   # densidad real trigo (pl/m²)
+        "Cs": 250,   # densidad estándar trigo (pl/m²)
+        "MAX_PLANTS_CAP": 250,  # tope para escalar emer_rel → plantas·m²·día
         "rend_testigo_kg_ha": 4000,
         "rend_observado_kg_ha": 3600
     }])
+
     tratamientos = pd.DataFrame([
         {"ensayo_id": "E001", "tipo": "preemergente", "fecha_aplicacion": "2025-09-20",
          "eficacia_pct": 90, "residual_dias": 10, "actua_s1": 1, "actua_s2": 1, "actua_s3": 0, "actua_s4": 0},
         {"ensayo_id": "E001", "tipo": "graminicida", "fecha_aplicacion": "2025-10-05",
          "eficacia_pct": 85, "residual_dias": 10, "actua_s1": 1, "actua_s2": 1, "actua_s3": 1, "actua_s4": 0},
     ])
+
+    # emergencia relativa (~suma 1)
     fechas = pd.date_range("2025-09-01", "2025-11-30", freq="D")
     mid = fechas[int(len(fechas)*0.35)]
     emer = []
@@ -87,6 +55,7 @@ def build_excel_template():
         emer.append(max(0.0, w))
     emer_rel = (np.array(emer) / np.sum(emer)).round(6)
     emergencia = pd.DataFrame({"ensayo_id": "E001", "fecha": fechas.date, "emer_rel": emer_rel})
+
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         ensayos.to_excel(writer, index=False, sheet_name="ensayos")
@@ -95,6 +64,7 @@ def build_excel_template():
     buf.seek(0)
     return buf.getvalue()
 
+# --------------------- Núcleo de predicción ------------------------
 def assign_state_by_age(age_days, s1=(1,6), s2=(7,27), s3=(28,59)):
     if age_days is None or age_days < s1[0]: return None
     if s1[0] <= age_days <= s1[1]: return 0
@@ -111,15 +81,20 @@ def combine_efficacies(effs):
     return 1 - prod
 
 def build_daily_control_mask(dates, states, ttos_rows):
-    n = len(dates); eff = np.zeros((n,4), dtype=float)
+    """Eficacia combinada por día y estado (S1..S4)."""
+    n = len(dates)
+    eff = np.zeros((n,4), dtype=float)
     windows = []
     for r in ttos_rows:
         tipo = str(r.get("tipo","")).strip().lower()
         fapp = to_date(r.get("fecha_aplicacion"))
         ef = float(r.get("eficacia_pct", 0))/100.0
         res = int(r.get("residual_dias",0))
-        mask_states = [int(r.get("actua_s1",0))>0, int(r.get("actua_s2",0))>0, int(r.get("actua_s3",0))>0, int(r.get("actua_s4",0))>0]
-        if fapp is None: 
+        mask_states = [int(r.get("actua_s1",0))>0,
+                       int(r.get("actua_s2",0))>0,
+                       int(r.get("actua_s3",0))>0,
+                       int(r.get("actua_s4",0))>0]
+        if fapp is None:
             continue
         if tipo == "presiembra":
             start = fapp - dt.timedelta(days=max(0,res)); end = fapp
@@ -128,37 +103,50 @@ def build_daily_control_mask(dates, states, ttos_rows):
         else:
             continue
         windows.append((tipo, start, end, ef, mask_states))
+
     for i, d in enumerate(dates):
         effs_state = [[] for _ in range(4)]
         for tipo, start, end, ef, mask_states in windows:
             if start <= d <= end:
                 for sidx in range(4):
-                    if mask_states[sidx]: effs_state[sidx].append(ef)
-        for sidx in range(4): eff[i, sidx] = combine_efficacies(effs_state[sidx])
+                    if mask_states[sidx]:
+                        effs_state[sidx].append(ef)
+        for sidx in range(4):
+            eff[i, sidx] = combine_efficacies(effs_state[sidx])
     return eff
 
 def predict_loss_for_ensayo(row_e, df_emerg, df_ttos,
                             s1, s2, s3,
                             k_loss, w_states, escala_A2=100.0,
                             beta_crop=0.8):
-    siembra = to_date(row_e["fecha_siembra"]); pc_ini = to_date(row_e["pc_ini"]); pc_fin = to_date(row_e["pc_fin"])
+    siembra = to_date(row_e["fecha_siembra"])
+    pc_ini  = to_date(row_e["pc_ini"])
+    pc_fin  = to_date(row_e["pc_fin"])
     max_cap = float(row_e.get("MAX_PLANTS_CAP", 250))
-    Ca = float(row_e.get("Ca", np.nan)); Cs = float(row_e.get("Cs", np.nan))
-    if any(pd.isna(v) for v in [Ca, Cs]) or Cs <= 0: return {"ok": False, "msg": "Faltan Ca/Cs o Cs<=0"}
-    if siembra is None or pc_ini is None or pc_fin is None: return {"ok": False, "msg": "Fechas inválidas (siembra/PC)"}
+
+    Ca = float(row_e.get("Ca", np.nan))
+    Cs = float(row_e.get("Cs", np.nan))
+    if any(pd.isna(v) for v in [Ca, Cs]) or Cs <= 0:
+        return {"ok": False, "msg": "Faltan Ca/Cs o Cs<=0"}
+
+    if siembra is None or pc_ini is None or pc_fin is None:
+        return {"ok": False, "msg": "Fechas inválidas (siembra/PC)"}
 
     df_emerg = df_emerg.copy()
     df_emerg["fecha"] = df_emerg["fecha"].apply(to_date)
     df_emerg = df_emerg.dropna(subset=["fecha","emer_rel"]).sort_values("fecha")
-    if df_emerg.empty: return {"ok": False, "msg": "Emergencia vacía"}
+    if df_emerg.empty:
+        return {"ok": False, "msg": "Emergencia vacía"}
 
     dates = list(df_emerg["fecha"].values)
-    age = [(d - siembra).days for d in dates]
-    states = [assign_state_by_age(a, s1, s2, s3) for a in age]
+    age   = [(d - siembra).days for d in dates]
+    states= [assign_state_by_age(a, s1, s2, s3) for a in age]
 
+    # Plantas/día sin supresión fija
     emer_rel = df_emerg["emer_rel"].values.astype(float)
-    pl_day = emer_rel * max_cap
+    pl_day   = emer_rel * max_cap
 
+    # Control por estado
     ttos_rows = df_ttos.to_dict(orient="records") if df_ttos is not None else []
     eff_by_state = build_daily_control_mask(dates, states, ttos_rows)
     pl_ctrl = pl_day.copy()
@@ -169,6 +157,7 @@ def predict_loss_for_ensayo(row_e, df_emerg, df_ttos,
         e = eff_by_state[i, sidx]
         pl_ctrl[i] *= (1.0 - e)
 
+    # Periodo crítico y pesos por estado
     pc_mask = np.array([1.0 if (pc_ini <= d <= pc_fin) else 0.0 for d in dates])
     wS = np.maximum(0, np.array(w_states, dtype=float))
     if wS.sum() == 0: wS = np.array([1,1,1,1], dtype=float)
@@ -177,40 +166,57 @@ def predict_loss_for_ensayo(row_e, df_emerg, df_ttos,
         sidx = states[i]
         w_day[i] = 0.0 if sidx is None else wS[sidx]
 
+    # A2 controlado
     A2_ctrl = float(np.sum(pl_ctrl * w_day * pc_mask))
 
+    # Atenuación por densidad del cultivo (trigo)
     ratio = Ca / float(Cs)
-    g_crop = math.exp(-max(0.0, float(beta_crop)) * (ratio - 1.0))
+    g_crop = math.exp(-max(0.0, float(beta_crop)) * (ratio - 1.0))  # <1 si Ca>Cs; >1 si Ca<Cs
     A2_eff = A2_ctrl * g_crop
 
+    # Pérdida predicha
     k = max(1e-6, float(k_loss))
     Loss_pred = 100.0 * (1.0 - math.exp(-k * (A2_eff / float(escala_A2))))
 
-    return {"ok": True, "A2_ctrl": A2_ctrl, "A2_eff": A2_eff, "g_crop": g_crop, "Loss_pred": Loss_pred}
+    return {
+        "ok": True,
+        "A2_ctrl": A2_ctrl,
+        "A2_eff": A2_eff,
+        "g_crop": g_crop,
+        "Loss_pred": Loss_pred
+    }
 
+# --------------------------- Calibración ----------------------------
 def loss_metrics(y_true, y_pred):
-    y_true = np.array(y_true, dtype=float); y_pred = np.array(y_pred, dtype=float)
+    y_true = np.array(y_true, dtype=float)
+    y_pred = np.array(y_pred, dtype=float)
     rmse = float(np.sqrt(np.mean((y_true - y_pred)**2))) if len(y_true) else np.nan
     mae  = float(np.mean(np.abs(y_true - y_pred))) if len(y_true) else np.nan
     return rmse, mae
 
 def random_search(objective_fn, n_iter, bounds, seed=123):
-    rng = np.random.default_rng(seed); best, best_score = None, np.inf
+    rng = np.random.default_rng(seed)
+    best, best_score = None, np.inf
     for _ in range(int(n_iter)):
         params = {k: rng.uniform(lo, hi) for k,(lo,hi) in bounds.items()}
         score = objective_fn(params)
-        if score < best_score: best, best_score = params, score
+        if score < best_score:
+            best, best_score = params, score
     return best, best_score
 
+# ------------------------------- UI --------------------------------
 st.set_page_config(page_title="PREDWEEM · Calibración (v2)", layout="wide")
-st.title("PREDWEEM — Módulo de Calibración (v2, Ca/Cs; sin Ciec_const)")
+st.title("PREDWEEM — Calibración (v2, Ca/Cs; sin Ciec_const)")
 
 with st.expander("1) Descargar plantilla Excel", expanded=True):
-    tpl = build_excel_template()
-    st.download_button("⬇️ Descargar plantilla v2.xlsx", data=tpl,
+    tpl_bytes = build_excel_template_v2()
+    st.download_button(
+        "⬇️ Descargar plantilla v2.xlsx",
+        data=tpl_bytes,
         file_name="plantilla_calibracion_v2.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    st.caption("Hojas: ensayos (incluye Ca y Cs), tratamientos, emergencia. Usar fechas ISO YYYY-MM-DD.")
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    st.caption("Hojas: ensayos (incluye Ca y Cs), tratamientos, emergencia. Fechas ISO (YYYY-MM-DD).")
 
 with st.expander("2) Subir Excel con datos", expanded=True):
     up = st.file_uploader("Cargar Excel (v2)", type=["xlsx"])
@@ -222,7 +228,8 @@ with st.expander("2) Subir Excel con datos", expanded=True):
             df_m = pd.read_excel(xls, "emergencia")
             st.success(f"Cargadas hojas: ensayos({len(df_e)}), tratamientos({len(df_t)}), emergencia({len(df_m)})")
         except Exception as ex:
-            st.error(f"Error al leer Excel: {ex}"); df_e = df_t = df_m = None
+            st.error(f"Error al leer Excel: {ex}")
+            df_e = df_t = df_m = None
     else:
         df_e = df_t = df_m = None
 
@@ -235,23 +242,30 @@ with st.expander("3) Configuración del modelo", expanded=True):
     s3_ini = st.number_input("S3 ini (d)", value=28, min_value=0, max_value=180)
     s3_fin = st.number_input("S3 fin (d)", value=59, min_value=0, max_value=240)
 
+    st.markdown("**Ponderación por estado (se calibran):**")
     c1,c2,c3,c4 = st.columns(4)
-    w1_lo = c1.number_input("w_S1 min", value=0.5, step=0.1); w1_hi = c1.number_input("w_S1 max", value=2.0, step=0.1)
-    w2_lo = c2.number_input("w_S2 min", value=0.5, step=0.1); w2_hi = c2.number_input("w_S2 max", value=2.0, step=0.1)
-    w3_lo = c3.number_input("w_S3 min", value=0.5, step=0.1); w3_hi = c3.number_input("w_S3 max", value=2.0, step=0.1)
-    w4_lo = c4.number_input("w_S4 min", value=0.1, step=0.1); w4_hi = c4.number_input("w_S4 max", value=1.5, step=0.1)
+    w1_lo = c1.number_input("w_S1 min", value=0.5, step=0.1)
+    w1_hi = c1.number_input("w_S1 max", value=2.0, step=0.1)
+    w2_lo = c2.number_input("w_S2 min", value=0.5, step=0.1)
+    w2_hi = c2.number_input("w_S2 max", value=2.0, step=0.1)
+    w3_lo = c3.number_input("w_S3 min", value=0.5, step=0.1)
+    w3_hi = c3.number_input("w_S3 max", value=2.0, step=0.1)
+    w4_lo = c4.number_input("w_S4 min", value=0.1, step=0.1)
+    w4_hi = c4.number_input("w_S4 max", value=1.5, step=0.1)
 
+    st.markdown("**Curva de pérdida:** Loss% = 100 × (1 − exp(−k_loss × A2_eff / escala_A2))")
     col1, col2 = st.columns(2)
     k_lo = col1.number_input("k_loss min", value=0.01, step=0.01, format="%.3f")
     k_hi = col1.number_input("k_loss max", value=0.50, step=0.01, format="%.3f")
     escala_A2 = col2.number_input("escala_A2 (normaliza A2)", value=100.0, step=10.0)
 
+    st.markdown("**Atenuación por densidad de cultivo:**  g = exp(−β × (Ca/Cs − 1))")
     b1,b2 = st.columns(2)
     beta_lo = b1.number_input("beta_crop min", value=0.0, step=0.1)
     beta_hi = b2.number_input("beta_crop max", value=1.5, step=0.1)
 
 with st.expander("4) Calibración", expanded=True):
-    n_iter = st.number_input("Iteraciones de búsqueda aleatoria", value=2000, min_value=50, step=100)
+    n_iter = st.number_input("Iteraciones (búsqueda aleatoria)", value=2000, min_value=50, step=100)
     seed = st.number_input("Seed", value=123, step=1)
     run = st.button("🚀 Ejecutar calibración")
 
@@ -263,11 +277,13 @@ with st.expander("4) Calibración", expanded=True):
         df_t = df_t.copy() if df_t is not None else pd.DataFrame(columns=["ensayo_id"])
         df_m = df_m.copy()
 
+        # calcular pérdida observada si no viene
         if "loss_obs_pct" not in df_e.columns:
             if {"rend_testigo_kg_ha","rend_observado_kg_ha"}.issubset(df_e.columns):
                 df_e["loss_obs_pct"] = 100.0 * (1.0 - (df_e["rend_observado_kg_ha"] / df_e["rend_testigo_kg_ha"]))
             else:
-                st.error("Falta 'loss_obs_pct' o (rend_testigo_kg_ha, rend_observado_kg_ha) en ensayos."); st.stop()
+                st.error("Falta 'loss_obs_pct' o (rend_testigo_kg_ha, rend_observado_kg_ha) en ensayos.")
+                st.stop()
 
         bounds = {
             "k_loss": (k_lo, k_hi),
@@ -278,7 +294,9 @@ with st.expander("4) Calibración", expanded=True):
             "beta_crop": (beta_lo, beta_hi),
         }
 
-        S1 = (int(s1_ini), int(s1_fin)); S2 = (int(s2_ini), int(s2_fin)); S3 = (int(s3_ini), int(s3_fin))
+        S1 = (int(s1_ini), int(s1_fin))
+        S2 = (int(s2_ini), int(s2_fin))
+        S3 = (int(s3_ini), int(s3_fin))
 
         def objective(params):
             k = params["k_loss"]; beta = params["beta_crop"]
@@ -288,17 +306,25 @@ with st.expander("4) Calibración", expanded=True):
                 ens_id = str(row["ensayo_id"])
                 sub_m = df_m[df_m["ensayo_id"]==ens_id]
                 sub_t = df_t[df_t["ensayo_id"]==ens_id]
-                res = predict_loss_for_ensayo(row, sub_m, sub_t, S1, S2, S3, k, wS, escala_A2=escala_A2, beta_crop=beta)
+                res = predict_loss_for_ensayo(row, sub_m, sub_t, S1, S2, S3, k, wS,
+                                              escala_A2=escala_A2, beta_crop=beta)
                 if res["ok"]:
-                    preds.append(res["Loss_pred"]); obs.append(float(row["loss_obs_pct"]))
-            if not preds: return np.inf
-            rmse,_ = loss_metrics(obs, preds); return rmse
+                    preds.append(res["Loss_pred"])
+                    obs.append(float(row["loss_obs_pct"]))
+            if not preds:
+                return np.inf
+            rmse,_ = loss_metrics(obs, preds)
+            return rmse
 
         with st.spinner("Calibrando..."):
             best, best_rmse = random_search(objective, n_iter=n_iter, bounds=bounds, seed=int(seed))
 
-        st.success("¡Listo!"); st.json(best); st.write(f"**RMSE (global):** {best_rmse:.3f}")
+        st.success("¡Listo!")
+        st.write("**Mejores parámetros:**")
+        st.json(best)
+        st.write(f"**RMSE (global):** {best_rmse:.3f}")
 
+        # Reconstrucción por ensayo con el mejor set
         k = best["k_loss"]; beta = best["beta_crop"]
         wS = [best["w_S1"], best["w_S2"], best["w_S3"], best["w_S4"]]
         rows = []
@@ -306,34 +332,49 @@ with st.expander("4) Calibración", expanded=True):
             ens_id = str(row["ensayo_id"])
             sub_m = df_m[df_m["ensayo_id"]==ens_id]
             sub_t = df_t[df_t["ensayo_id"]==ens_id]
-            res = predict_loss_for_ensayo(row, sub_m, sub_t, S1, S2, S3, k, wS, escala_A2=escala_A2, beta_crop=beta)
+            res = predict_loss_for_ensayo(row, sub_m, sub_t, S1, S2, S3, k, wS,
+                                          escala_A2=escala_A2, beta_crop=beta)
             if not res["ok"]:
                 rows.append({"ensayo_id": ens_id, "ok": False, "msg": res.get("msg","")})
                 continue
-            rows.append({"ensayo_id": ens_id, "ok": True, "A2_ctrl": res["A2_ctrl"], "g_crop": res["g_crop"],
-                        "A2_eff": res["A2_eff"], "Loss_obs_pct": float(row["loss_obs_pct"]), "Loss_pred_pct": res["Loss_pred"]})
-        df_res = pd.DataFrame(rows); df_val = df_res[df_res["ok"]==True].copy()
+            rows.append({
+                "ensayo_id": ens_id, "ok": True,
+                "A2_ctrl": res["A2_ctrl"], "g_crop": res["g_crop"], "A2_eff": res["A2_eff"],
+                "Loss_obs_pct": float(row["loss_obs_pct"]), "Loss_pred_pct": res["Loss_pred"]
+            })
+        df_res = pd.DataFrame(rows)
+        df_val = df_res[df_res["ok"]==True].copy()
         if not df_val.empty:
             rmse, mae = loss_metrics(df_val["Loss_obs_pct"], df_val["Loss_pred_pct"])
             st.write(f"**RMSE validación:** {rmse:.3f}  |  **MAE:** {mae:.3f}")
-            st.dataframe(df_val[["ensayo_id","A2_ctrl","g_crop","A2_eff","Loss_obs_pct","Loss_pred_pct"]].round(3), use_container_width=True)
+            st.dataframe(df_val[["ensayo_id","A2_ctrl","g_crop","A2_eff","Loss_obs_pct","Loss_pred_pct"]].round(3),
+                         use_container_width=True)
+
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df_val["Loss_obs_pct"], y=df_val["Loss_pred_pct"], mode="markers+text",
-                                     text=df_val["ensayo_id"], textposition="top center", name="Ensayos"))
+            fig.add_trace(go.Scatter(
+                x=df_val["Loss_obs_pct"], y=df_val["Loss_pred_pct"],
+                mode="markers+text", text=df_val["ensayo_id"], textposition="top center",
+                name="Ensayos"
+            ))
             maxi = float(max(df_val["Loss_obs_pct"].max(), df_val["Loss_pred_pct"].max(), 1.0))
             fig.add_trace(go.Scatter(x=[0,maxi], y=[0,maxi], mode="lines", name="1:1", line=dict(dash="dash")))
             fig.update_layout(title="Pérdida de rinde: Observado vs Predicho",
                               xaxis_title="Observado (%)", yaxis_title="Predicho (%)", height=500)
             st.plotly_chart(fig, use_container_width=True)
+
             csv = df_val.to_csv(index=False).encode("utf-8")
-            st.download_button("💾 Descargar resultados.csv", data=csv, file_name="calibracion_resultados_v2.csv", mime="text/csv")
+            st.download_button("💾 Descargar resultados.csv", data=csv,
+                               file_name="calibracion_resultados_v2.csv",
+                               mime="text/csv")
         else:
             st.warning("No hay ensayos válidos para reportar.")
 
-"""
-script_path = "/mnt/data/calibra_v2.py"
-with open(script_path, "w", encoding="utf-8") as f:
-    f.write(script)
-
-script_path, tpl_path
+with st.expander("Notas del modelo", expanded=False):
+    st.markdown("""
+- **Sin `Ciec_const`**: la supresión del cultivo se modela con densidades de trigo (Ca, Cs).
+- `g(Ca,Cs,β) = exp(−β · (Ca/Cs − 1))`: si **Ca>Cs** → g<1 (menor pérdida); si **Ca<Cs** → g>1 (mayor pérdida).
+- `emer_rel` ≈ distribución de nacimientos (suma ~1) reescalada por `MAX_PLANTS_CAP` a plantas·m²·día.
+- El control químico se aplica por **estado** (S1..S4) con ventanas y combinación independiente: `1 − Π(1−ef_i)`.
+- Parámetros calibrados: `k_loss`, `w_S1..w_S4`, `beta_crop`.  Objetivo: **RMSE**.
+""")
 
