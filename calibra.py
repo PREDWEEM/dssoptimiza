@@ -1,5 +1,4 @@
-# Create v2.4 script that optionally calibrates loss-curve parameters alpha and Lmax
-script = r'''# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # PREDWEEM · Calibración v2.4
 # - Igual a v2.3 (curva de pérdida original = hipérbola rectangular)
 # - + Opción para **calibrar α y Lmax** (por defecto desactivado para mantener identidad con el original)
@@ -554,8 +553,3 @@ with st.expander("Notas", expanded=False):
 - **Supresión dinámica**: `Ciec(t) = (LAI(t)/LAIhc) · (Ca/Cs)`; `g_eq` ponderado.
 - **Generador sintético** integrado. Descargas 100% en memoria.
 """)
-'''
-path = "/mnt/data/calibra_v2_4_full.py"
-with open(path, "w", encoding="utf-8") as f:
-    f.write(script)
-path
