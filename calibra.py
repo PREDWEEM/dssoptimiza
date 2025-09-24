@@ -1,7 +1,11 @@
-# -*- coding: utf-8 -*-
-# PREDWEEM · Calibración v2.2 (con generador de datos sintéticos)
-# - v2.1 + pestaña para generar un Excel multi-ensayo (sin Ciec_const; con Ca/Cs)
-# - Descargas en memoria; LAIhc calibrable; supresión dinámica Ciec(t)
+# Create v2.4 script that optionally calibrates loss-curve parameters alpha and Lmax
+script = r'''# -*- coding: utf-8 -*-
+# PREDWEEM · Calibración v2.4
+# - Igual a v2.3 (curva de pérdida original = hipérbola rectangular)
+# - + Opción para **calibrar α y Lmax** (por defecto desactivado para mantener identidad con el original)
+#
+# Pérdida(%):  Loss(x; α, Lmax) = (α * x) / (1 + (α * x / Lmax))
+# Supresión:   Ciec(t) = (LAI(t)/LAIhc) * (Ca/Cs);  g_eq = ⟨1 - Ciec(t)⟩_ponderado
 
 import io, json, math, datetime as dt
 from datetime import timedelta, date
@@ -120,7 +124,6 @@ def build_synthetic_excel_v2(n_trials=8, start_all=dt.date(2025,9,1), end_all=dt
             "loss_obs_pct": round(loss_target, 2)
         })
 
-        # Tratamientos: preem y graminicida
         trat_rows.append({
             "ensayo_id": eid, "tipo": "preemergente",
             "fecha_aplicacion": siembra.isoformat(),
@@ -136,7 +139,6 @@ def build_synthetic_excel_v2(n_trials=8, start_all=dt.date(2025,9,1), end_all=dt
             "actua_s1": 1, "actua_s2": 1, "actua_s3": 1, "actua_s4": 0
         })
 
-        # Emergencia relativa: gaussiana
         peak = siembra + timedelta(days=int(float(rng.uniform(7, 18))))
         sigma = float(rng.uniform(8, 14))
         vals = []
@@ -158,6 +160,11 @@ def build_synthetic_excel_v2(n_trials=8, start_all=dt.date(2025,9,1), end_all=dt
         df_emg.to_excel(writer, index=False, sheet_name="emergencia")
     buf.seek(0)
     return buf.getvalue(), df_ens
+
+# ----------------------- Curva de pérdida (hipérbola rectangular) -----------------------
+def loss_pct_rect_hyperbola(x, alpha=0.375, Lmax=76.639):
+    x = np.asarray(x, dtype=float)
+    return (alpha * x) / (1.0 + (alpha * x / Lmax))
 
 # ----------------------- Núcleo de predicción -----------------------
 def assign_state_by_age(age_days, s1=(1,6), s2=(7,27), s3=(28,59)):
@@ -208,8 +215,10 @@ def build_daily_control_mask(dates, states, ttos_rows):
 
 def predict_loss_for_ensayo(row_e, df_emerg, df_ttos,
                             s1, s2, s3,
-                            k_loss, w_states, escala_A2=100.0,
-                            t_lag=7, t_close=45, lai_max=3.5, k_beer=0.6, LAIhc=3.5, canopy_mode="LAI"):
+                            w_states,
+                            # parámetros de canopia (fijos en UI, calibrable LAIhc)
+                            t_lag=7, t_close=45, lai_max=3.5, k_beer=0.6, LAIhc=3.5, canopy_mode="LAI",
+                            alpha=0.375, Lmax=76.639):
     siembra = to_date(row_e["fecha_siembra"])
     pc_ini  = to_date(row_e["pc_ini"])
     pc_fin  = to_date(row_e["pc_fin"])
@@ -269,9 +278,9 @@ def predict_loss_for_ensayo(row_e, df_emerg, df_ttos,
     den = float(np.sum(weights))
     g_eq = float(np.sum(s_t * weights)) / den if den > 0 else 1.0
 
+    # Pérdida con parámetros (alpha, Lmax)
     A2_eff = A2_ctrl * g_eq
-    k = max(1e-6, float(k_loss))
-    Loss_pred = 100.0 * (1.0 - math.exp(-k * (A2_eff / float(escala_A2))))
+    Loss_pred = float(loss_pct_rect_hyperbola(A2_eff, alpha=alpha, Lmax=Lmax))
 
     return {"ok": True, "A2_ctrl": A2_ctrl, "A2_eff": A2_eff, "g_eq": g_eq,
             "Loss_pred": Loss_pred, "LAI_mean": float(np.mean(LAI_t))}
@@ -295,10 +304,10 @@ def random_search(objective_fn, n_iter, bounds, seed=123):
     return best, best_score
 
 # ----------------------- UI -----------------------
-st.set_page_config(page_title="PREDWEEM · Calibración v2.2", layout="wide")
-st.title("PREDWEEM — Calibración v2.2 (supresión dinámica con LAIhc + datos sintéticos)")
+st.set_page_config(page_title="PREDWEEM · Calibración v2.4", layout="wide")
+st.title("PREDWEEM — Calibración v2.4 (curva original + opción de calibrar α/Lmax)")
 
-# --- 1) Plantilla + 1b) Generador sintético ---
+# 1) Plantilla y 1b) Generador sintético
 with st.expander("1) Descargar plantilla Excel", expanded=False):
     tpl_bytes = build_excel_template_v2()
     offer_download_bytes("plantilla_calibracion_v2.xlsx", tpl_bytes, "⬇️ Descargar plantilla v2.xlsx",
@@ -333,7 +342,7 @@ with st.expander("1b) Generar datos sintéticos (multi-ensayo)", expanded=True):
                                  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
             st.dataframe(df_preview.head(10), use_container_width=True)
 
-# --- 2) Subir Excel con datos ---
+# 2) Subir Excel
 with st.expander("2) Subir Excel con datos", expanded=True):
     up = st.file_uploader("Cargar Excel (v2)", type=["xlsx"])
     if up is not None:
@@ -349,7 +358,7 @@ with st.expander("2) Subir Excel con datos", expanded=True):
     else:
         df_e = df_t = df_m = None
 
-# --- 3) Configuración del modelo ---
+# 3) Configuración del modelo
 with st.expander("3) Configuración del modelo", expanded=True):
     colA, colB, colC, colD = st.columns(4)
     s1_ini = colA.number_input("S1 ini (d)", value=1, min_value=0, max_value=30)
@@ -370,13 +379,7 @@ with st.expander("3) Configuración del modelo", expanded=True):
     w4_lo = c4.number_input("w_S4 min", value=0.1, step=0.1)
     w4_hi = c4.number_input("w_S4 max", value=1.5, step=0.1)
 
-    st.markdown("**Curva de pérdida:**  Loss% = 100 × (1 − exp(−k_loss × A2_eff / escala_A2))")
-    col1, col2 = st.columns(2)
-    k_lo = col1.number_input("k_loss min", value=0.01, step=0.01, format="%.3f")
-    k_hi = col1.number_input("k_loss max", value=0.50, step=0.01, format="%.3f")
-    escala_A2 = col2.number_input("escala_A2 (normaliza A2)", value=100.0, step=10.0)
-
-# --- 4) Parámetros de canopia ---
+# 4) Parámetros de canopia
 with st.expander("4) Parámetros de canopia", expanded=True):
     st.caption("Estos definen la dinámica LAI(t). LAIhc **se calibra** en el paso siguiente.")
     colx, coly, colz, colk = st.columns(4)
@@ -386,15 +389,24 @@ with st.expander("4) Parámetros de canopia", expanded=True):
     k_beer = colk.number_input("k (Beer–Lambert)", value=0.6, step=0.05)
     canopy_mode = st.selectbox("Modo canopia", ["LAI","Cobertura→LAI (Beer)"], index=0)
 
-# --- 5) Calibración ---
+# 5) Calibración
 with st.expander("5) Calibración", expanded=True):
-    st.markdown("Se calibra `k_loss`, `w_S1..w_S4` y **`LAIhc`**.")
-    n_iter = st.number_input("Iteraciones (búsqueda aleatoria)", value=2000, min_value=50, step=100)
+    st.markdown("Se calibran **w_S1..w_S4** y **LAIhc**. Opcionalmente, **α** y **Lmax** de la curva de pérdida.")
+    n_iter = st.number_input("Iteraciones (búsqueda aleatoria)", value=3000, min_value=50, step=100)
     seed_cal = st.number_input("Seed (calibración)", value=123, step=1)
 
     colh1, colh2 = st.columns(2)
     LAIhc_lo = colh1.number_input("LAIhc min", value=2.0, step=0.1)
     LAIhc_hi = colh2.number_input("LAIhc max", value=6.0, step=0.1)
+
+    st.divider()
+    st.markdown("**Curva de pérdida** (por defecto fija en α=0.375, Lmax=76.639 para replicar el original)")
+    calibrate_curve = st.checkbox("Calibrar α y Lmax", value=False)
+    colp1, colp2 = st.columns(2)
+    alpha_lo = colp1.number_input("α min", value=0.10, step=0.01, format="%.3f")
+    alpha_hi = colp1.number_input("α max", value=0.80, step=0.01, format="%.3f")
+    Lmax_lo  = colp2.number_input("Lmax min", value=40.0, step=1.0)
+    Lmax_hi  = colp2.number_input("Lmax max", value=120.0, step=1.0)
 
     run = st.button("🚀 Ejecutar calibración")
 
@@ -414,33 +426,38 @@ with st.expander("5) Calibración", expanded=True):
                 st.stop()
 
         bounds = {
-            "k_loss": (k_lo, k_hi),
             "w_S1": (w1_lo, w1_hi),
             "w_S2": (w2_lo, w2_hi),
             "w_S3": (w3_lo, w3_hi),
             "w_S4": (w4_lo, w4_hi),
             "LAIhc": (LAIhc_lo, LAIhc_hi),
         }
+        if calibrate_curve:
+            bounds.update({
+                "alpha": (alpha_lo, alpha_hi),
+                "Lmax":  (Lmax_lo,  Lmax_hi),
+            })
 
         S1 = (int(s1_ini), int(s1_fin))
         S2 = (int(s2_ini), int(s2_fin))
         S3 = (int(s3_ini), int(s3_fin))
 
         def objective(params):
-            k = params["k_loss"]
             LAIhc_p = params["LAIhc"]
             wS = [params["w_S1"], params["w_S2"], params["w_S3"], params["w_S4"]]
+            alpha_p = float(params.get("alpha", 0.375))
+            Lmax_p  = float(params.get("Lmax",  76.639))
             preds, obs = [], []
             for _, row in df_e.iterrows():
                 ens_id = str(row["ensayo_id"])
                 sub_m = df_m[df_m["ensayo_id"]==ens_id]
                 sub_t = df_t[df_t["ensayo_id"]==ens_id]
-                res = predict_loss_for_ensayo(row, sub_m, sub_t, S1, S2, S3, k, wS,
-                                              escala_A2=escala_A2,
+                res = predict_loss_for_ensayo(row, sub_m, sub_t, S1, S2, S3, wS,
                                               t_lag=int(t_lag), t_close=int(t_close),
                                               lai_max=float(lai_max), k_beer=float(k_beer),
                                               LAIhc=float(LAIhc_p),
-                                              canopy_mode="LAI" if canopy_mode=="LAI" else "COVER")
+                                              canopy_mode="LAI" if canopy_mode=="LAI" else "COVER",
+                                              alpha=alpha_p, Lmax=Lmax_p)
                 if res["ok"]:
                     preds.append(res["Loss_pred"])
                     obs.append(float(row["loss_obs_pct"]))
@@ -457,21 +474,23 @@ with st.expander("5) Calibración", expanded=True):
         st.json(best)
         st.write(f"**RMSE (global):** {best_rmse:.3f}")
 
-        # Reconstrucción por ensayo
-        k = best["k_loss"]
+        # Reconstrucción por ensayo con los mejores
         LAIhc_p = best["LAIhc"]
         wS = [best["w_S1"], best["w_S2"], best["w_S3"], best["w_S4"]]
+        alpha_p = float(best.get("alpha", 0.375))
+        Lmax_p  = float(best.get("Lmax",  76.639))
+
         rows = []
         for _, row in df_e.iterrows():
             ens_id = str(row["ensayo_id"])
             sub_m = df_m[df_m["ensayo_id"]==ens_id]
             sub_t = df_t[df_t["ensayo_id"]==ens_id]
-            res = predict_loss_for_ensayo(row, sub_m, sub_t, S1, S2, S3, k, wS,
-                                          escala_A2=escala_A2,
+            res = predict_loss_for_ensayo(row, sub_m, sub_t, S1, S2, S3, wS,
                                           t_lag=int(t_lag), t_close=int(t_close),
                                           lai_max=float(lai_max), k_beer=float(k_beer),
                                           LAIhc=float(LAIhc_p),
-                                          canopy_mode="LAI" if canopy_mode=="LAI" else "COVER")
+                                          canopy_mode="LAI" if canopy_mode=="LAI" else "COVER",
+                                          alpha=alpha_p, Lmax=Lmax_p)
             if not res["ok"]:
                 rows.append({"ensayo_id": ens_id, "ok": False, "msg": res.get("msg","")})
                 continue
@@ -479,16 +498,17 @@ with st.expander("5) Calibración", expanded=True):
                 "ensayo_id": ens_id, "ok": True,
                 "A2_ctrl": res["A2_ctrl"], "g_eq": res["g_eq"], "A2_eff": res["A2_eff"],
                 "Loss_obs_pct": float(row["loss_obs_pct"]), "Loss_pred_pct": res["Loss_pred"],
-                "LAI_mean": res["LAI_mean"]
+                "LAI_mean": res["LAI_mean"], "alpha": alpha_p, "Lmax": Lmax_p
             })
         df_res = pd.DataFrame(rows)
         df_val = df_res[df_res["ok"]==True].copy()
         if not df_val.empty:
             rmse, mae = loss_metrics(df_val["Loss_obs_pct"], df_val["Loss_pred_pct"])
             st.write(f"**RMSE validación:** {rmse:.3f}  |  **MAE:** {mae:.3f}")
-            st.dataframe(df_val[["ensayo_id","A2_ctrl","g_eq","A2_eff","Loss_obs_pct","Loss_pred_pct","LAI_mean"]].round(3),
+            st.dataframe(df_val[["ensayo_id","A2_ctrl","g_eq","A2_eff","Loss_obs_pct","Loss_pred_pct","LAI_mean","alpha","Lmax"]].round(3),
                          use_container_width=True)
 
+            # Gráfico 1: Observado vs Predicho
             fig = go.Figure()
             fig.add_trace(go.Scatter(
                 x=df_val["Loss_obs_pct"], y=df_val["Loss_pred_pct"],
@@ -501,24 +521,41 @@ with st.expander("5) Calibración", expanded=True):
                               xaxis_title="Observado (%)", yaxis_title="Predicho (%)", height=500)
             st.plotly_chart(fig, use_container_width=True)
 
+            # Gráfico 2: Curva de pérdida vs A2_eff
+            max_cap_guess = float(df_e.get("MAX_PLANTS_CAP", pd.Series([250])).max())
+            x_curve = np.linspace(0.0, max_cap_guess, 400)
+            y_curve = loss_pct_rect_hyperbola(x_curve, alpha=alpha_p, Lmax=Lmax_p)
+            fig2 = go.Figure()
+            fig2.add_trace(go.Scatter(x=x_curve, y=y_curve, mode="lines", name=f"Pérdida % (α={alpha_p:.3f}, Lmax={Lmax_p:.1f})"))
+            fig2.add_trace(go.Scatter(x=df_val["A2_eff"], y=df_val["Loss_pred_pct"], mode="markers+text",
+                                      text=df_val["ensayo_id"], textposition="top center", name="Ensayos"))
+            fig2.update_layout(title="Pérdida (%) vs A2_eff (curva calibrada)",
+                               xaxis_title="A2_eff (pl·m²)", yaxis_title="Pérdida (%)", height=500)
+            st.plotly_chart(fig2, use_container_width=True)
+
             csv = df_val.to_csv(index=False).encode("utf-8")
-            offer_download_bytes("calibracion_resultados_v2_2.csv", csv, "💾 Descargar resultados.csv", "text/csv")
+            offer_download_bytes("calibracion_resultados_v2_4.csv", csv, "💾 Descargar resultados.csv", "text/csv")
         else:
             st.warning("No hay ensayos válidos para reportar.")
 
-# --- 6) Exportar este script ---
+# 6) Exportar este script
 with st.expander("6) Exportar este script", expanded=False):
     import inspect, sys
     try:
         src = inspect.getsource(sys.modules[__name__])
-        offer_download_text("calibra_v2_2.py", src, "⬇️ Descargar calibra_v2_2.py")
+        offer_download_text("calibra_v2_4.py", src, "⬇️ Descargar calibra_v2_4.py")
     except Exception:
         st.info("No se pudo extraer el código fuente automáticamente en este entorno.")
 
 with st.expander("Notas", expanded=False):
     st.markdown("""
-- **Supresión dinámica:** `Ciec(t) = (LAI(t)/LAIhc) * (Ca/Cs)`; `s(t)=1−Ciec(t)`; `g_eq` es el promedio ponderado de `s(t)` con los mismos pesos de `A2_ctrl`.
-- **LAIhc** es calibrado (escala de alta competitividad del cultivo). `t_lag`, `t_close`, `LAI_max`, `k_beer` son configurables.
-- **Generador sintético:** crea un Excel multi-ensayo con hojas `ensayos`, `tratamientos`, `emergencia` listo para cargar.
-- Descargas 100% en memoria con `st.download_button`.
+- **Curva de pérdida**: `Loss%(x) = (α·x) / (1 + (α·x / Lmax))` (por defecto α=0.375, Lmax=76.639 como el original).
+- **Toggle** “Calibrar α y Lmax” permite ajustar ambos parámetros junto con `LAIhc` y `w_S1..w_S4`.
+- **Supresión dinámica**: `Ciec(t) = (LAI(t)/LAIhc) · (Ca/Cs)`; `g_eq` ponderado.
+- **Generador sintético** integrado. Descargas 100% en memoria.
 """)
+'''
+path = "/mnt/data/calibra_v2_4_full.py"
+with open(path, "w", encoding="utf-8") as f:
+    f.write(script)
+path
