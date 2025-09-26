@@ -953,122 +953,130 @@ if results:
             "week": df_week_b, "factor_area": factor_area, "sup_cap_b": sup_cap_b
         }
 
-    envb = recompute_apply_best(best)
+        envb = recompute_apply_best(best)
     if envb is None:
         st.info("No se pudieron recomputar series para el mejor escenario.")
     else:
-        ts_b = envb["ts_b"]; df_week_b = envb["week"]
-        S1c,S2c,S3c,S4c = envb["S_ctrl"]
+        ts_b = envb["ts_b"]
+        df_week_b = envb["week"]
+        S1c, S2c, S3c, S4c = envb["S_ctrl"]
         sup_cap_b = envb["sup_cap_b"]
 
-       # ----- Gráfico 1 — Mejor -----
-if paint_best:
-    st.subheader("📊 Gráfico 1 — Mejor escenario")
+        # ----- Gráfico 1 — Mejor escenario -----
+        st.subheader("📊 Gráfico 1 — Mejor escenario")
 
-    fig_best1 = go.Figure()
+        fig_best1 = go.Figure()
 
-    fig_best1.add_trace(
-        go.Scatter(
-            x=ts,
-            y=df_plot["EMERREL"],
-            mode="lines",
-            name="EMERREL (cruda)"
-        )
-    )
-
-    fig_best1.update_layout(
-        margin=dict(l=10, r=10, t=40, b=10),
-        title="EMERREL (izq) y Plantas·m²·semana (der) · Mejor escenario",
-        xaxis_title="Tiempo",
-        yaxis_title="EMERREL",
-        yaxis2=dict(
-            overlaying="y",
-            side="right",
-            title="pl·m²·sem⁻¹",
-            position=1.0,
-            range=[0, 100],
-            tick0=0,
-            dtick=20,
-            showgrid=False
-        ),
-        yaxis3=dict(
-            overlaying="y",
-            side="right",
-            title="Ciec (0–1)",
-            position=0.97,
-            range=[0, 1]
-        )
-    )
-
-    fig_best1.add_trace(
-        go.Scatter(
-            x=df_week_b["fecha"],
-            y=df_week_b["pl_sin_ctrl_cap"],
-            name="Aporte semanal (sin control, cap) — mejor",
-            yaxis="y2",
-            mode="lines+markers"
-        )
-    )
-
-    fig_best1.add_trace(
-        go.Scatter(
-            x=df_week_b["fecha"],
-            y=df_week_b["pl_con_ctrl_cap"],
-            name="Aporte semanal (con control, cap) — mejor",
-            yaxis="y2",
-            mode="lines+markers",
-            line=dict(dash="dot")
-        )
-    )
-
-    # ---- Calcular curva Ciec para la siembra óptima ----
-    one_minus_best = compute_ciec_for(sow_best)  # función ya definida
-    Ciec_best = 1.0 - one_minus_best
-    fig_best1.add_trace(
-        go.Scatter(
-            x=ts_b,
-            y=Ciec_best,
-            mode="lines",
-            name="Ciec (mejor)",
-            yaxis="y3"
-        )
-    )
-
-    # Bandas del cronograma óptimo
-    for a in best["schedule"]:
-        x0 = pd.to_datetime(a["date"])
-        x1 = x0 + pd.Timedelta(days=int(a["days"]))
-        fig_best1.add_vrect(
-            x0=x0,
-            x1=x1,
-            line_width=0,
-            fillcolor="rgba(30,144,255,0.18)",
-            opacity=0.18
-        )
-        fig_best1.add_annotation(
-            x=x0 + (x1 - x0) / 2,
-            y=0.86,
-            xref="x",
-            yref="paper",
-            text=a["kind"],
-            showarrow=False,
-            bgcolor="rgba(30,144,255,0.85)"
+        fig_best1.add_trace(
+            go.Scatter(
+                x=ts,
+                y=df_plot["EMERREL"],
+                mode="lines",
+                name="EMERREL (cruda)"
+            )
         )
 
-    st.plotly_chart(fig_best1, use_container_width=True)
+        fig_best1.update_layout(
+            margin=dict(l=10, r=10, t=40, b=10),
+            title="EMERREL (izq) y Plantas·m²·semana (der) · Mejor escenario",
+            xaxis_title="Tiempo",
+            yaxis_title="EMERREL",
+            yaxis2=dict(
+                overlaying="y",
+                side="right",
+                title="pl·m²·sem⁻¹",
+                position=1.0,
+                range=[0, 100],
+                tick0=0,
+                dtick=20,
+                showgrid=False
+            ),
+            yaxis3=dict(
+                overlaying="y",
+                side="right",
+                title="Ciec (0–1)",
+                position=0.97,
+                range=[0, 1]
+            )
+        )
 
- 
+        fig_best1.add_trace(
+            go.Scatter(
+                x=df_week_b["fecha"],
+                y=df_week_b["pl_sin_ctrl_cap"],
+                name="Aporte semanal (sin control, cap) — mejor",
+                yaxis="y2",
+                mode="lines+markers"
+            )
+        )
+
+        fig_best1.add_trace(
+            go.Scatter(
+                x=df_week_b["fecha"],
+                y=df_week_b["pl_con_ctrl_cap"],
+                name="Aporte semanal (con control, cap) — mejor",
+                yaxis="y2",
+                mode="lines+markers",
+                line=dict(dash="dot")
+            )
+        )
+
+        # ---- Calcular curva Ciec para la siembra óptima ----
+        one_minus_best = compute_ciec_for(best["sow"])
+        Ciec_best = 1.0 - one_minus_best
+        fig_best1.add_trace(
+            go.Scatter(
+                x=ts_b,
+                y=Ciec_best,
+                mode="lines",
+                name="Ciec (mejor)",
+                yaxis="y3"
+            )
+        )
+
+        # Bandas del cronograma óptimo
+        for a in best["schedule"]:
+            x0 = pd.to_datetime(a["date"])
+            x1 = x0 + pd.Timedelta(days=int(a["days"]))
+            fig_best1.add_vrect(
+                x0=x0,
+                x1=x1,
+                line_width=0,
+                fillcolor="rgba(30,144,255,0.18)",
+                opacity=0.18
+            )
+            fig_best1.add_annotation(
+                x=x0 + (x1 - x0) / 2,
+                y=0.86,
+                xref="x",
+                yref="paper",
+                text=a["kind"],
+                showarrow=False,
+                bgcolor="rgba(30,144,255,0.85)"
+            )
+
+        st.plotly_chart(fig_best1, use_container_width=True)
+
         # ----- Figura 2 — Pérdida (%) vs x · Mejor -----
         X2_b = float(np.nansum(sup_cap_b[envb["mask_since_b"]]))
-        X3_b = float(np.nansum((S1c+S2c+S3c+S4c)[envb["mask_since_b"]]))
+        X3_b = float(np.nansum((S1c + S2c + S3c + S4c)[envb["mask_since_b"]]))
+
         x_curve = np.linspace(0.0, MAX_PLANTS_CAP, 400)
         y_curve = 0.375 * x_curve / (1.0 + (0.375 * x_curve / 76.639))
+
         fig2_best = go.Figure()
         fig2_best.add_trace(go.Scatter(x=x_curve, y=y_curve, mode="lines", name="Modelo pérdida % vs x"))
-        fig2_best.add_trace(go.Scatter(x=[X2_b], y=[_loss(X2_b)], mode="markers+text", name="x₂ (sin ctrl)", text=[f"x₂={X2_b:.1f}"], textposition="top center"))
-        fig2_best.add_trace(go.Scatter(x=[X3_b], y=[_loss(X3_b)], mode="markers+text", name="x₃ (con ctrl)", text=[f"x₃={X3_b:.1f}"], textposition="top right"))
-        fig2_best.update_layout(title="Figura 2 — Pérdida de rendimiento (%) vs x (mejor escenario)",
-                                xaxis_title="x (pl·m²)", yaxis_title="Pérdida (%)", margin=dict(l=10, r=10, t=40, b=10))
+        fig2_best.add_trace(go.Scatter(x=[X2_b], y=[_loss(X2_b)], mode="markers+text",
+                                       name="x₂ (sin ctrl)", text=[f"x₂={X2_b:.1f}"], textposition="top center"))
+        fig2_best.add_trace(go.Scatter(x=[X3_b], y=[_loss(X3_b)], mode="markers+text",
+                                       name="x₃ (con ctrl)", text=[f"x₃={X3_b:.1f}"], textposition="top right"))
+
+        fig2_best.update_layout(
+            title="Figura 2 — Pérdida de rendimiento (%) vs x (mejor escenario)",
+            xaxis_title="x (pl·m²)",
+            yaxis_title="Pérdida (%)",
+            margin=dict(l=10, r=10, t=40, b=10)
+        )
         st.plotly_chart(fig2_best, use_container_width=True)
 
         # ----- Figura 4 — Aportes por estado (mejor) -----
@@ -1076,15 +1084,28 @@ if paint_best:
             pd.DataFrame({"fecha": ts_b, "S1": S1c, "S2": S2c, "S3": S3c, "S4": S4c})
             .set_index("fecha").resample("W-MON").sum().reset_index()
         )
+
         st.subheader("Figura 4 — Dinámica temporal de S1–S4 (mejor escenario)")
+
         fig_states = go.Figure()
-        for col in ["S1","S2","S3","S4"]:
-            fig_states.add_trace(go.Scatter(x=df_states_week_b["fecha"], y=df_states_week_b[col], mode="lines", name=col, stackgroup="one"))
-        fig_states.update_layout(title="Aportes semanales por estado (con control + cap) · pl·m²·sem⁻¹",
-                                 xaxis_title="Tiempo", yaxis_title="pl·m²·sem⁻¹", margin=dict(l=10, r=10, t=50, b=10))
+        for col in ["S1", "S2", "S3", "S4"]:
+            fig_states.add_trace(
+                go.Scatter(x=df_states_week_b["fecha"], y=df_states_week_b[col],
+                           mode="lines", name=col, stackgroup="one")
+            )
+
+        fig_states.update_layout(
+            title="Aportes semanales por estado (con control + cap) · pl·m²·sem⁻¹",
+            xaxis_title="Tiempo",
+            yaxis_title="pl·m²·sem⁻¹",
+            margin=dict(l=10, r=10, t=50, b=10)
+        )
         st.plotly_chart(fig_states, use_container_width=True)
-else:
-    st.info("Aún no hay resultados de optimización para mostrar.")
+   
+    
+    
+    
+    
 
 
 
