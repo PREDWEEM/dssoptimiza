@@ -962,7 +962,7 @@ if results:
         sup_cap_b = envb["sup_cap_b"]
 
         # ----- Gráfico 1 — Mejor -----
-       st.subheader("📊 Gráfico 1 — Mejor escenario")
+       st.subheader("📊 Gráfico 1 — Mejor escenario"
        fig_best1 = go.Figure()
        fig_best1.add_trace(go.Scatter(x=ts, y=df_plot["EMERREL"], mode="lines", name="EMERREL (cruda)"))
        fig_best1.update_layout(
