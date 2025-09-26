@@ -18,12 +18,13 @@ from datetime import timedelta
 import itertools, random, math as _math
 
 # ================== FUNCIÓN DE PÉRDIDA ==================
-def _loss(x: float) -> float:
+def _loss(x):
     """
     Función de pérdida (% pérdida de rinde en función de la densidad efectiva).
+    Acepta escalares o arrays (NumPy).
     Fórmula base: 0.375 * x / (1 + (0.375 * x / 76.639))
     """
-    x = float(x)
+    x = np.asarray(x, dtype=float)
     return 0.375 * x / (1.0 + (0.375 * x / 76.639))
 
 # Estado UI
