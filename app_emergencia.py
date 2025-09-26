@@ -953,38 +953,38 @@ if results:
         sup_cap_b = envb["sup_cap_b"]
 
         # ----- Gráfico 1 — Mejor -----
-st.subheader("📊 Gráfico 1 — Mejor escenario")
-fig_best1 = go.Figure()
-fig_best1.add_trace(go.Scatter(x=ts, y=df_plot["EMERREL"], mode="lines", name="EMERREL (cruda)"))
-fig_best1.update_layout(
-    margin=dict(l=10, r=10, t=40, b=10),
-    title=f"EMERREL (izq) y Plantas·m²·semana (der) · Mejor escenario",
-    xaxis_title="Tiempo", yaxis_title="EMERREL",
-    yaxis2=dict(overlaying="y", side="right", title="pl·m²·sem⁻¹",
+       st.subheader("📊 Gráfico 1 — Mejor escenario")
+       fig_best1 = go.Figure()
+       fig_best1.add_trace(go.Scatter(x=ts, y=df_plot["EMERREL"], mode="lines", name="EMERREL (cruda)"))
+       fig_best1.update_layout(
+       margin=dict(l=10, r=10, t=40, b=10),
+       title=f"EMERREL (izq) y Plantas·m²·semana (der) · Mejor escenario",
+       xaxis_title="Tiempo", yaxis_title="EMERREL",
+       yaxis2=dict(overlaying="y", side="right", title="pl·m²·sem⁻¹",
                 position=1.0, range=[0, 100], tick0=0, dtick=20, showgrid=False),
-    yaxis3=dict(overlaying="y", side="right", title="Ciec (0–1)", position=0.97, range=[0, 1])
+       yaxis3=dict(overlaying="y", side="right", title="Ciec (0–1)", position=0.97, range=[0, 1])
 )
-fig_best1.add_trace(go.Scatter(x=df_week_b["fecha"], y=df_week_b["pl_sin_ctrl_cap"],
+       fig_best1.add_trace(go.Scatter(x=df_week_b["fecha"], y=df_week_b["pl_sin_ctrl_cap"],
                                name="Aporte semanal (sin control, cap) — mejor",
                                yaxis="y2", mode="lines+markers"))
-fig_best1.add_trace(go.Scatter(x=df_week_b["fecha"], y=df_week_b["pl_con_ctrl_cap"],
+       fig_best1.add_trace(go.Scatter(x=df_week_b["fecha"], y=df_week_b["pl_con_ctrl_cap"],
                                name="Aporte semanal (con control, cap) — mejor",
                                yaxis="y2", mode="lines+markers", line=dict(dash="dot")))
 
-# ---- Calcular curva Ciec para la siembra óptima ----
-one_minus_best = compute_ciec_for(sow_best)    # ya tenés esta función definida
-Ciec_best = 1.0 - one_minus_best
-fig_best1.add_trace(go.Scatter(x=ts_b, y=Ciec_best, mode="lines", name="Ciec (mejor)", yaxis="y3"))
+       # ---- Calcular curva Ciec para la siembra óptima ----
+       one_minus_best = compute_ciec_for(sow_best)    # ya tenés esta función definida
+       Ciec_best = 1.0 - one_minus_best
+       fig_best1.add_trace(go.Scatter(x=ts_b, y=Ciec_best, mode="lines", name="Ciec (mejor)", yaxis="y3"))
 
-# Bandas del cronograma óptimo
-for a in best["schedule"]:
-    x0 = pd.to_datetime(a["date"]); x1 = x0 + pd.Timedelta(days=int(a["days"]))
-    fig_best1.add_vrect(x0=x0, x1=x1, line_width=0, fillcolor="rgba(30,144,255,0.18)", opacity=0.18)
-    fig_best1.add_annotation(x=x0 + (x1-x0)/2, y=0.86, xref="x", yref="paper",
+       # Bandas del cronograma óptimo
+       for a in best["schedule"]:
+       x0 = pd.to_datetime(a["date"]); x1 = x0 + pd.Timedelta(days=int(a["days"]))
+       fig_best1.add_vrect(x0=x0, x1=x1, line_width=0, fillcolor="rgba(30,144,255,0.18)", opacity=0.18)
+       fig_best1.add_annotation(x=x0 + (x1-x0)/2, y=0.86, xref="x", yref="paper",
                              text=a["kind"], showarrow=False, bgcolor="rgba(30,144,255,0.85)")
 
-st.plotly_chart(fig_best1, use_container_width=True)
-
+       st.plotly_chart(fig_best1, use_container_width=True)
+ 
         # ----- Figura 2 — Pérdida (%) vs x · Mejor -----
         def _loss(x): x=float(x); return 0.375 * x / (1.0 + (0.375 * x / 76.639))
         X2_b = float(np.nansum(sup_cap_b[envb["mask_since_b"]]))
