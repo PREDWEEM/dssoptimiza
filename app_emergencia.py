@@ -17,6 +17,15 @@ from urllib.error import URLError, HTTPError
 from datetime import timedelta
 import itertools, random, math as _math
 
+# ================== FUNCIÓN DE PÉRDIDA ==================
+def _loss(x: float) -> float:
+    """
+    Función de pérdida (% pérdida de rinde en función de la densidad efectiva).
+    Fórmula base: 0.375 * x / (1 + (0.375 * x / 76.639))
+    """
+    x = float(x)
+    return 0.375 * x / (1.0 + (0.375 * x / 76.639))
+
 # Estado UI
 if "opt_running" not in st.session_state: st.session_state.opt_running = False
 if "opt_stop" not in st.session_state:    st.session_state.opt_stop = False
