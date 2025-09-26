@@ -868,6 +868,68 @@ else:
     else:
         status_ph.info("Listo para optimizar. Ajustá parámetros y presioná **Iniciar**.")
 
+# =================== Función auxiliar ===================
+def recompute_apply_best(best):
+    sow_best = pd.to_datetime(best["sow"]).date()
+    env = recompute_for_sow(sow_best)
+    if env is None:
+        return None
+
+    ts_b, fechas_d_b = env["ts"], env["fechas_d"]
+    mask_since_b = env["mask_since"]
+    factor_area = env["factor_area"]
+    S1p, S2p, S3p, S4p = env["S_pl"]
+    sup_cap_b = env["sup_cap"]
+
+    # Inicializar controles
+    c1 = np.ones_like(fechas_d_b, float)
+    c2 = np.ones_like(fechas_d_b, float)
+    c3 = np.ones_like(fechas_d_b, float)
+    c4 = np.ones_like(fechas_d_b, float)
+
+    def _apply(weights, eff, states):
+        if eff <= 0 or not states:
+            return
+        reduc = np.clip(1.0 - (eff/100.0)*np.clip(weights,0.0,1.0), 0.0, 1.0)
+        if "S1" in states: np.multiply(c1, reduc, out=c1)
+        if "S2" in states: np.multiply(c2, reduc, out=c2)
+        if "S3" in states: np.multiply(c3, reduc, out=c3)
+        if "S4" in states: np.multiply(c4, reduc, out=c4)
+
+    # Aplicar cada intervención del mejor escenario
+    for a in best["schedule"]:
+        ini = pd.to_datetime(a["date"]).date()
+        fin = (pd.to_datetime(a["date"]) + pd.Timedelta(days=int(a["days"]))).date()
+        w = ((fechas_d_b >= ini) & (fechas_d_b < fin)).astype(float)
+        _apply(w, a["eff"], a["states"])
+
+    total_ctrl_daily = (S1p*c1 + S2p*c2 + S3p*c3 + S4p*c4)
+    eps = 1e-12
+    scale = np.where(total_ctrl_daily > eps,
+                     np.minimum(1.0, sup_cap_b / total_ctrl_daily), 0.0)
+
+    S1_ctrl_cap_b = S1p * c1 * scale
+    S2_ctrl_cap_b = S2p * c2 * scale
+    S3_ctrl_cap_b = S3p * c3 * scale
+    S4_ctrl_cap_b = S4p * c4 * scale
+    plantas_ctrl_cap_b = S1_ctrl_cap_b + S2_ctrl_cap_b + S3_ctrl_cap_b + S4_ctrl_cap_b
+
+    df_daily_b = pd.DataFrame({
+        "fecha": ts_b,
+        "pl_sin_ctrl_cap": np.where(mask_since_b, sup_cap_b, 0.0),
+        "pl_con_ctrl_cap": np.where(mask_since_b, plantas_ctrl_cap_b, 0.0),
+    })
+    df_week_b = df_daily_b.set_index("fecha").resample("W-MON").sum().reset_index()
+
+    return {
+        "ts_b": ts_b,
+        "mask_since_b": mask_since_b,
+        "S_ctrl": (S1_ctrl_cap_b, S2_ctrl_cap_b, S3_ctrl_cap_b, S4_ctrl_cap_b),
+        "week": df_week_b,
+        "factor_area": factor_area,
+        "sup_cap_b": sup_cap_b
+    }
+
 # =================== Reporte mejores ===================
 if results:
     results_sorted = sorted(results, key=lambda r: (r["loss_pct"], r["x3"]))
@@ -916,43 +978,28 @@ if results:
 
         # ----- Gráfico 1 — Mejor escenario -----
         st.subheader("📊 Gráfico 1 — Mejor escenario")
-
         fig_best1 = go.Figure()
         fig_best1.add_trace(go.Scatter(x=ts, y=df_plot["EMERREL"], mode="lines", name="EMERREL (cruda)"))
-
-        fig_best1.update_layout(
-            margin=dict(l=10, r=10, t=40, b=10),
-            title="EMERREL (izq) y Plantas·m²·semana (der) · Mejor escenario",
-            xaxis_title="Tiempo",
-            yaxis_title="EMERREL",
-            yaxis2=dict(
-                overlaying="y",
-                side="right",
-                title="pl·m²·sem⁻¹",
-                position=1.0,
-                range=[0, 100],
-                dtick=20,
-                showgrid=False
-            ),
-            yaxis3=dict(
-                overlaying="y",
-                side="right",
-                title="Ciec (0–1)",
-                position=0.97,
-                range=[0, 1]
-            )
-        )
-
         fig_best1.add_trace(go.Scatter(x=df_week_b["fecha"], y=df_week_b["pl_sin_ctrl_cap"],
                                        name="Aporte semanal (sin control, cap)", yaxis="y2", mode="lines+markers"))
         fig_best1.add_trace(go.Scatter(x=df_week_b["fecha"], y=df_week_b["pl_con_ctrl_cap"],
                                        name="Aporte semanal (con control, cap)", yaxis="y2",
                                        mode="lines+markers", line=dict(dash="dot")))
 
-        # Curva Ciec
+        # Curva Ciec recalculada
         one_minus_best = compute_ciec_for(best["sow"])
         Ciec_best = 1.0 - one_minus_best
         fig_best1.add_trace(go.Scatter(x=ts_b, y=Ciec_best, mode="lines", name="Ciec (mejor)", yaxis="y3"))
+
+        # Layout
+        fig_best1.update_layout(
+            margin=dict(l=10, r=10, t=40, b=10),
+            title="EMERREL y plantas·m²·semana · Mejor escenario",
+            xaxis_title="Tiempo",
+            yaxis_title="EMERREL",
+            yaxis2=dict(overlaying="y", side="right", title="pl·m²·sem⁻¹", range=[0,100]),
+            yaxis3=dict(overlaying="y", side="right", title="Ciec", position=0.97, range=[0,1])
+        )
 
         # Bandas de intervenciones
         for a in best["schedule"]:
@@ -960,23 +1007,18 @@ if results:
             x1 = x0 + pd.Timedelta(days=int(a["days"]))
             fig_best1.add_vrect(x0=x0, x1=x1, line_width=0, fillcolor="rgba(30,144,255,0.18)", opacity=0.18)
             fig_best1.add_annotation(
-                x=x0 + (x1 - x0) / 2,
-                y=0.86,
-                xref="x",
-                yref="paper",
-                text=a["kind"],
-                showarrow=False,
-                bgcolor="rgba(30,144,255,0.85)"
+                x=x0 + (x1-x0)/2, y=0.86, xref="x", yref="paper",
+                text=a["kind"], showarrow=False, bgcolor="rgba(30,144,255,0.85)"
             )
 
         st.plotly_chart(fig_best1, use_container_width=True)
 
         # ----- Figura 2 — Pérdida (%) vs x -----
         X2_b = float(np.nansum(sup_cap_b[envb["mask_since_b"]]))
-        X3_b = float(np.nansum((S1c + S2c + S3c + S4c)[envb["mask_since_b"]]))
+        X3_b = float(np.nansum((S1c+S2c+S3c+S4c)[envb["mask_since_b"]]))
 
         x_curve = np.linspace(0.0, MAX_PLANTS_CAP, 400)
-        y_curve = 0.375 * x_curve / (1.0 + (0.375 * x_curve / 76.639))
+        y_curve = _loss(x_curve)
 
         fig2_best = go.Figure()
         fig2_best.add_trace(go.Scatter(x=x_curve, y=y_curve, mode="lines", name="Modelo pérdida % vs x"))
@@ -984,42 +1026,30 @@ if results:
                                        name="x₂ (sin ctrl)", text=[f"x₂={X2_b:.1f}"], textposition="top center"))
         fig2_best.add_trace(go.Scatter(x=[X3_b], y=[_loss(X3_b)], mode="markers+text",
                                        name="x₃ (con ctrl)", text=[f"x₃={X3_b:.1f}"], textposition="top right"))
-
         fig2_best.update_layout(
-            title="Figura 2 — Pérdida de rendimiento (%) vs x (mejor escenario)",
-            xaxis_title="x (pl·m²)",
-            yaxis_title="Pérdida (%)",
-            margin=dict(l=10, r=10, t=40, b=10)
+            title="Figura 2 — Pérdida de rendimiento (%) vs x",
+            xaxis_title="x (pl·m²)", yaxis_title="Pérdida (%)"
         )
         st.plotly_chart(fig2_best, use_container_width=True)
 
-        # ----- Figura 4 — Aportes por estado -----
+        # ----- Figura 4 — Dinámica temporal S1–S4 -----
         df_states_week_b = (
             pd.DataFrame({"fecha": ts_b, "S1": S1c, "S2": S2c, "S3": S3c, "S4": S4c})
             .set_index("fecha").resample("W-MON").sum().reset_index()
         )
-
-        st.subheader("Figura 4 — Dinámica temporal de S1–S4 (mejor escenario)")
-
+        st.subheader("Figura 4 — Dinámica temporal de S1–S4")
         fig_states = go.Figure()
-        for col in ["S1", "S2", "S3", "S4"]:
+        for col in ["S1","S2","S3","S4"]:
             fig_states.add_trace(go.Scatter(x=df_states_week_b["fecha"], y=df_states_week_b[col],
                                             mode="lines", name=col, stackgroup="one"))
-
         fig_states.update_layout(
-            title="Aportes semanales por estado (con control + cap) · pl·m²·sem⁻¹",
-            xaxis_title="Tiempo",
-            yaxis_title="pl·m²·sem⁻¹",
-            margin=dict(l=10, r=10, t=50, b=10)
+            title="Aportes semanales por estado (con control + cap)",
+            xaxis_title="Tiempo", yaxis_title="pl·m²·sem⁻¹"
         )
         st.plotly_chart(fig_states, use_container_width=True)
+
 else:
     st.info("Aún no hay resultados de optimización para mostrar.")
-
-
-
-
-
 
 
 
