@@ -1059,7 +1059,6 @@ if paint_best:
 
  
         # ----- Figura 2 — Pérdida (%) vs x · Mejor -----
-        def _loss(x): x=float(x); return 0.375 * x / (1.0 + (0.375 * x / 76.639))
         X2_b = float(np.nansum(sup_cap_b[envb["mask_since_b"]]))
         X3_b = float(np.nansum((S1c+S2c+S3c+S4c)[envb["mask_since_b"]]))
         x_curve = np.linspace(0.0, MAX_PLANTS_CAP, 400)
