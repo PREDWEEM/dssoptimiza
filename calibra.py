@@ -1,24 +1,24 @@
 # -*- coding: utf-8 -*-
 # app_calibra_estados_hiperbolica.py
-# Streamlit • Calibración con x ponderada por estados (S1–S4) + función hiperbólica
-# Requiere: pandas, numpy, scipy, plotly, xlsxwriter  (y opcionalmente kaleido para PNG)
+# Streamlit — Calibración con x (S1–S4) normalizada por duración + función HIPERBÓLICA
 
 import io, json, numpy as np, pandas as pd, streamlit as st
 from scipy.optimize import minimize
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="Calibración PREDWEEM (Estados + Hiperbólica)", layout="wide")
-st.title("Calibración — x ponderada por estados (S1–S4) + función hiperbólica")
+st.set_page_config(page_title="Calibración (Estados normalizados + Hiperbólica)", layout="wide")
+st.title("Calibración — x (S1–S4) normalizada por duración + función hiperbólica")
 
 uploaded = st.file_uploader("📥 Subí tu Excel con hojas: `ensayos` y `emergencia`", type=["xlsx"])
 st.caption("Hojas mínimas: **ensayos** (ensayo_id, loss_obs_pct, MAX_PLANTS_CAP, fecha_siembra, pc_ini, pc_fin) "
            "y **emergencia** (ensayo_id, fecha, emer_rel en 0–1 o %).")
 
-# ---------------- Sidebar: opciones ----------------
+# ---------------- Sidebar ----------------
 with st.sidebar:
-    st.header("Opciones")
+    st.header("Opciones de cálculo")
     use_ciec = st.checkbox("Aplicar competencia del cultivo (1 − Ciec)", value=True)
-    st.subheader("Parámetros de canopia (si usás Ciec)")
+
+    st.subheader("Canopia (si usás Ciec)")
     mode_canopy = st.selectbox("Modelo de canopia", ["Cobertura (%)", "LAI dinámico"], index=0)
     t_lag   = st.number_input("Días a emergencia (lag)", 0, 60, 7, 1)
     t_close = st.number_input("Días a cierre de entresurco", 10, 180, 45, 1)
@@ -35,6 +35,13 @@ with st.sidebar:
     w_s3 = st.number_input("w_S3", 0.0, 2.0, 0.6, 0.05)
     w_s4 = st.number_input("w_S4", 0.0, 2.0, 1.0, 0.05)
 
+    st.subheader("Normalización por duración (evitar plantas·día)")
+    T4_mode = st.radio(
+        "Duración de S4 (T4)",
+        ["Fijo: 60 días", "Dinámico: días efectivos de S4 dentro del PC"],
+        index=0
+    )
+
     st.subheader("Iniciales y límites (hiperbólica)")
     alpha0 = st.number_input("α inicial", 1e-4, 5.0, 0.05, 0.01, format="%.4f")
     Lmax0  = st.number_input("Lmax inicial (%)", 5.0, 300.0, 80.0, 1.0)
@@ -42,7 +49,7 @@ with st.sidebar:
 
     run = st.button("🧠 Ejecutar calibración", use_container_width=True)
 
-# ---------------- Utilidades ----------------
+# ---------------- Utils ----------------
 def daily_series(sub_emerg: pd.DataFrame, start, end) -> pd.Series:
     idx = pd.date_range(start=start, end=end, freq="D")
     s = sub_emerg.set_index("fecha")["emer_rel"].reindex(idx).interpolate("linear").fillna(0.0)
@@ -126,50 +133,15 @@ def calibrate_hyperbolic(x, y, alpha0=0.05, Lmax0=80.0):
     r2 = (1 - ss_res/ss_tot) if (ss_tot and ss_tot != 0) else float("nan")
     return {"alpha": a, "Lmax": L, "rmse": rmse, "mae": mae, "r2": r2, "yhat": yhat}
 
-def compute_x_states_for_row(row, emer_df: pd.DataFrame, use_ciec: bool,
-                             mode_canopy: str, t_lag: int, t_close: int, cov_max: float,
-                             lai_max: float, k_beer: float, Ca: float, Cs: float, LAIhc: float,
-                             w_states: dict):
-    ens_id = row["ensayo_id"]
-    f_sow  = pd.to_datetime(row["fecha_siembra"])
-    pc_ini = pd.to_datetime(row["pc_ini"])
-    pc_fin = pd.to_datetime(row["pc_fin"])
-    cap    = float(row["MAX_PLANTS_CAP"])
-
-    sub = emer_df[emer_df["ensayo_id"] == ens_id][["fecha","emer_rel"]].dropna().copy()
-    if sub.empty or pd.isna(f_sow) or pd.isna(pc_fin):
-        return 0.0
-
-    # Convertir % a 0..1 si fuese necesario (heurística)
-    if sub["emer_rel"].max() > 1.5:
-        sub["emer_rel"] = sub["emer_rel"] / 100.0
-
-    s = daily_series(sub, f_sow, pc_fin)     # EMERREL diaria (0..1)
-    auc_total = auc(s.index, s.values)
-    if auc_total <= 0:
-        return 0.0
-    factor = cap / auc_total                 # a pl·m²/día
-
-    if use_ciec:
-        Ciec = ciec_series(s.index, f_sow, mode_canopy, int(t_lag), int(t_close),
-                           float(cov_max), float(lai_max), float(k_beer),
-                           float(Ca), float(Cs), float(LAIhc))
-        daily_eff = s.values * (1.0 - Ciec) * factor
-    else:
-        daily_eff = s.values * factor
-
-    states = non_overlapping_states(pd.Series(daily_eff, index=s.index))
-    D = (states["S1"]*w_states["S1"] +
-         states["S2"]*w_states["S2"] +
-         states["S3"]*w_states["S3"] +
-         states["S4"]*w_states["S4"]).to_numpy()
-
-    mask_pc = (s.index >= pc_ini) & (s.index <= pc_fin)
-    x_states = auc(s.index[mask_pc], D[mask_pc])
-    return float(x_states)
+def effective_T4_days(sow_date: pd.Timestamp, pc_ini: pd.Timestamp, pc_fin: pd.Timestamp) -> int:
+    """Días efectivos de S4 dentro del PC (≥60 días desde siembra). Mínimo 1."""
+    start_S4 = max(pc_ini, sow_date + pd.Timedelta(days=60))
+    if start_S4 > pc_fin:
+        return 1
+    return max(1, (pc_fin - start_S4).days + 1)
 
 # ---------------- Ejecución ----------------
-if not uploaded:
+if uploaded is None:
     st.info("Subí el Excel para habilitar la calibración.")
     st.stop()
 
@@ -190,25 +162,67 @@ if not need_ens.issubset(ens.columns) or not need_em.issubset(emer.columns):
     st.error("Estructura inválida. Revisá columnas requeridas en 'ensayos' y 'emergencia'.")
     st.stop()
 
-# Calcular x (estados)
+# Cálculo de x (estados normalizados por duración)
 w_states = {"S1": w_s1, "S2": w_s2, "S3": w_s3, "S4": w_s4}
-with st.spinner("Calculando densidad efectiva x (ponderada por estados) por ensayo…"):
-    xs = ens.apply(
-        compute_x_states_for_row,
-        axis=1,
-        emer_df=emer,
-        use_ciec=use_ciec,
-        mode_canopy=mode_canopy,
-        t_lag=int(t_lag), t_close=int(t_close),
-        cov_max=float(cov_max), lai_max=float(lai_max), k_beer=float(k_beer),
-        Ca=float(Ca), Cs=float(Cs), LAIhc=float(LAIhc),
-        w_states=w_states
-    )
+L1, L2, L3 = 7, 21, 32  # longitudes de S1..S3
+
+with st.spinner("Calculando densidad efectiva x (estados normalizada) por ensayo…"):
+    xs = []
+    for _, row in ens.iterrows():
+        ens_id = row["ensayo_id"]
+        f_sow  = pd.to_datetime(row["fecha_siembra"])
+        pc_ini = pd.to_datetime(row["pc_ini"])
+        pc_fin = pd.to_datetime(row["pc_fin"])
+        cap    = float(row["MAX_PLANTS_CAP"])
+
+        sub = emer[emer["ensayo_id"] == ens_id][["fecha","emer_rel"]].dropna().copy()
+        if sub.empty or pd.isna(f_sow) or pd.isna(pc_fin):
+            xs.append(0.0); continue
+
+        # % -> 0..1 si hace falta
+        if sub["emer_rel"].max() > 1.5:
+            sub["emer_rel"] = sub["emer_rel"] / 100.0
+
+        s = daily_series(sub, f_sow, pc_fin)         # EMERREL diaria (0..1)
+        auc_total = auc(s.index, s.values)
+        if auc_total <= 0:
+            xs.append(0.0); continue
+
+        factor = cap / auc_total                     # a pl·m²/día
+
+        if use_ciec:
+            Ciec = ciec_series(s.index, f_sow, mode_canopy, int(t_lag), int(t_close),
+                               float(cov_max), float(lai_max), float(k_beer),
+                               float(Ca), float(Cs), float(LAIhc))
+            daily_eff = s.values * (1.0 - Ciec) * factor
+        else:
+            daily_eff = s.values * factor
+
+        states = non_overlapping_states(pd.Series(daily_eff, index=s.index))
+
+        # --- Normalización por duración de estado ---
+        if T4_mode.startswith("Fijo"):
+            T4 = 60
+        else:
+            T4 = effective_T4_days(f_sow, pc_ini, pc_fin)
+
+        D = (
+            states["S1"] * w_states["S1"] / L1 +
+            states["S2"] * w_states["S2"] / L2 +
+            states["S3"] * w_states["S3"] / L3 +
+            states["S4"] * w_states["S4"] / max(1, T4)
+        ).to_numpy()
+
+        mask_pc = (s.index >= pc_ini) & (s.index <= pc_fin)
+        x_val = auc(s.index[mask_pc], D[mask_pc])    # ≈ pl·m² (no plantas·día)
+        xs.append(float(x_val))
 
 ens = ens.copy()
-ens["x_pl_m2_states"] = xs.astype(float)
+ens["x_pl_m2_states"] = np.array(xs, dtype=float)
 y_obs = ens["loss_obs_pct"].to_numpy(float)
 x_val = ens["x_pl_m2_states"].to_numpy(float)
+
+st.markdown(f"**Rango de x (pl·m²):** min={np.nanmin(x_val):.2f} · p50={np.nanmedian(x_val):.2f} · max={np.nanmax(x_val):.2f}")
 
 # Ejecutar calibración
 if run:
@@ -241,7 +255,7 @@ if run:
     mx = max(float(out["loss_obs_pct"].max()), float(out["predicho"].max()), 1.0)
     fig.add_trace(go.Scatter(x=[0,mx], y=[0,mx], mode="lines", name="1:1", line=dict(dash="dash")))
     fig.update_layout(
-        title="Observado vs Predicho — x (estados) + hiperbólica",
+        title="Observado vs Predicho — x (estados normalizada) + hiperbólica",
         xaxis_title="Observado (%)", yaxis_title="Predicho (%)",
         margin=dict(l=10,r=10,t=40,b=10)
     )
@@ -255,7 +269,7 @@ if run:
     fig2.add_trace(go.Scatter(x=x_val, y=y_obs, mode="markers", name="Observado (ensayos)"))
     fig2.update_layout(
         title=f"Función de pérdida — α={a_b:.4f}, Lmax={L_b:.1f}",
-        xaxis_title="x (pl·m²) — densidad efectiva ponderada por estados",
+        xaxis_title="x (pl·m²) — estados normalizada por duración",
         yaxis_title="Pérdida de rinde (%)",
         margin=dict(l=10,r=10,t=40,b=10)
     )
@@ -269,7 +283,7 @@ if run:
         st.download_button(
             "📥 CSV resultados",
             data=out.to_csv(index=False).encode("utf-8"),
-            file_name="calibracion_final_estados_hiperbolica.csv",
+            file_name="calibracion_estados_normalizada_hiperbolica.csv",
             mime="text/csv",
             use_container_width=True
         )
@@ -282,6 +296,7 @@ if run:
                 "RMSE":[fit["rmse"]], "MAE":[fit["mae"]], "R2":[fit["r2"]],
                 "use_ciec":[use_ciec],
                 "w_S1":[w_s1], "w_S2":[w_s2], "w_S3":[w_s3], "w_S4":[w_s4],
+                "T4_mode":[T4_mode],
                 "canopy_mode":[mode_canopy], "t_lag":[t_lag], "t_close":[t_close],
                 "cov_max":[cov_max], "lai_max":[lai_max], "k_beer":[k_beer],
                 "Ca":[Ca], "Cs":[Cs], "LAIhc":[LAIhc]
@@ -289,27 +304,27 @@ if run:
         st.download_button(
             "📊 Excel resultados",
             data=bio.getvalue(),
-            file_name="calibracion_final_estados_hiperbolica.xlsx",
+            file_name="calibracion_estados_normalizada_hiperbolica.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
 
     with c3:
-        # Export PNG de Observado vs Predicho (requiere kaleido instalado)
         try:
             png1 = fig.to_image(format="png", scale=2)
-            st.download_button("🖼️ PNG Obs vs Pred", data=png1, file_name="obs_vs_pred_estados_hiperbolica.png",
+            st.download_button("🖼️ PNG Obs vs Pred", data=png1,
+                               file_name="obs_vs_pred_estados_normalizada_hiperbolica.png",
                                mime="image/png", use_container_width=True)
         except Exception:
             st.info("Para exportar PNG instalá `kaleido`:  `pip install -U kaleido`")
 
     with c4:
-        # Export JSON con parámetros y configuración
         params = {
             "loss_kind": "hyperbolic",
             "alpha": float(a_b), "Lmax": float(L_b),
             "use_ciec": bool(use_ciec),
             "state_weights": {"S1": float(w_s1), "S2": float(w_s2), "S3": float(w_s3), "S4": float(w_s4)},
+            "state_durations": {"S1": 7, "S2": 21, "S3": 32, "S4": (60 if T4_mode.startswith('Fijo') else "effective_in_PC")},
             "canopy": {
                 "mode": mode_canopy, "t_lag": int(t_lag), "t_close": int(t_close),
                 "cov_max": float(cov_max), "lai_max": float(lai_max),
@@ -319,10 +334,11 @@ if run:
         st.download_button(
             "🧾 JSON parámetros",
             data=json.dumps(params, ensure_ascii=False, indent=2).encode("utf-8"),
-            file_name="predweem_config.json",
+            file_name="predweem_config_estados_normalizada.json",
             mime="application/json",
             use_container_width=True
         )
 
 else:
     st.info("Cargá el Excel y presioná **🧠 Ejecutar calibración**.")
+
