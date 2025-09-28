@@ -3,6 +3,8 @@
 # - Acumulación desde siembra (lote limpio pre-siembra)
 # - Opción para calibrar α y Lmax (curva hipérbola rectangular)
 # - Descargas en memoria (no escribe a disco en la app)
+# - Parche: parseo robusto de tratamientos, normalización emer_rel por ensayo,
+#           clamp de LAIhc, mapeo explícito de canopy_mode, resultados ampliados
 
 import io, json, math, datetime as dt
 from datetime import timedelta, date
@@ -10,6 +12,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
+import inspect, sys
 
 # ============== Utilidades de descarga en memoria (sin disco) ==============
 def offer_download_text(filename: str, text: str, label: str | None = None):
@@ -52,6 +55,23 @@ def canopy_LAI_series(dates, siembra, t_lag=7, t_close=45, lai_max=3.5, k_beer=0
         fc = np.clip(fc, 0.0, 1.0)
         LAI = -np.log(np.clip(1.0 - fc, 1e-9, 1.0))/max(1e-6, k_beer)
         return np.clip(LAI, 0.0, lai_max)
+
+def _canon_mode_string(sel: str) -> str:
+    """Mapea selección UI a 'LAI' o 'COVER'."""
+    sel = (sel or "LAI").strip().upper()
+    return "LAI" if sel.startswith("LAI") else "COVER"
+
+# ----------------------- Normalización emergencia -----------------------
+def normalize_emerg_by_trial(df_emerg: pd.DataFrame) -> pd.DataFrame:
+    """Normaliza 'emer_rel' para que por cada ensayo_id sume 1. Clip a no-negativos."""
+    df = df_emerg.copy()
+    if not {"ensayo_id","emer_rel"}.issubset(df.columns):
+        return df
+    df["emer_rel"] = pd.to_numeric(df["emer_rel"], errors="coerce").fillna(0.0).clip(lower=0.0)
+    sums = df.groupby("ensayo_id")["emer_rel"].transform("sum").replace(0, np.nan)
+    df["emer_rel"] = df["emer_rel"] / sums
+    df["emer_rel"] = df["emer_rel"].fillna(0.0)
+    return df
 
 # ----------------------- Plantilla Excel base -----------------------
 def build_excel_template_v2() -> bytes:
@@ -179,35 +199,77 @@ def combine_efficacies(effs):
         prod *= (1 - e)
     return 1 - prod
 
+# ---------- PARCHE: build_daily_control_mask robusto ----------
 def build_daily_control_mask(dates, states, ttos_rows):
+    """Devuelve matriz [n_dias, 4] con eficacias combinadas por estado."""
+    def _to_float(x, default=0.0):
+        try:
+            if x is None: return float(default)
+            v = float(x)
+            if np.isnan(v): return float(default)
+            return v
+        except Exception:
+            return float(default)
+
+    def _to_int_nonneg(x, default=0):
+        v = _to_float(x, default=default)
+        v = int(round(v))
+        return max(0, v)
+
     n = len(dates)
-    eff = np.zeros((n,4), dtype=float)
+    eff = np.zeros((n, 4), dtype=float)
     windows = []
-    for r in ttos_rows:
-        tipo = str(r.get("tipo","")).strip().lower()
+
+    # Construye ventanas con sanidad de tipos
+    for r in (ttos_rows or []):
+        tipo = str(r.get("tipo", "") or "").strip().lower()
         fapp = to_date(r.get("fecha_aplicacion"))
-        ef = float(r.get("eficacia_pct", 0))/100.0
-        res = int(r.get("residual_dias",0))
-        mask_states = [int(r.get("actua_s1",0))>0,
-                       int(r.get("actua_s2",0))>0,
-                       int(r.get("actua_s3",0))>0,
-                       int(r.get("actua_s4",0))>0]
+
+        ef = _to_float(r.get("eficacia_pct", 0.0), 0.0) / 100.0
+        ef = float(np.clip(ef, 0.0, 1.0))
+
+        res = _to_int_nonneg(r.get("residual_dias", 0), 0)
+
+        mask_states = [
+            _to_int_nonneg(r.get("actua_s1", 0), 0) > 0,
+            _to_int_nonneg(r.get("actua_s2", 0), 0) > 0,
+            _to_int_nonneg(r.get("actua_s3", 0), 0) > 0,
+            _to_int_nonneg(r.get("actua_s4", 0), 0) > 0,
+        ]
+
         if fapp is None:
             continue
+
         if tipo == "presiembra":
-            start = fapp - dt.timedelta(days=max(0,res)); end = fapp
-        elif tipo in ("preemergente","post_selectivo","graminicida"):
-            start = fapp; end = fapp + dt.timedelta(days=max(0,res))
+            start = fapp - dt.timedelta(days=res)
+            end   = fapp
+        elif tipo in ("preemergente", "post_selectivo", "graminicida"):
+            start = fapp
+            end   = fapp + dt.timedelta(days=res)
         else:
+            # tipo desconocido: ignorar
             continue
+
         windows.append((tipo, start, end, ef, mask_states))
+
+    # Barrido diario
     for i, d in enumerate(dates):
         effs_state = [[] for _ in range(4)]
-        for tipo, start, end, ef, mask_states in windows:
+        for _, start, end, ef, mask_states in windows:
             if start <= d <= end:
                 for sidx in range(4):
-                    if mask_states[sidx]: effs_state[sidx].append(ef)
-        for sidx in range(4): eff[i, sidx] = combine_efficacies(effs_state[sidx])
+                    if mask_states[sidx]:
+                        effs_state[sidx].append(ef)
+        # Combinar multiplicativamente
+        for sidx in range(4):
+            if effs_state[sidx]:
+                prod = 1.0
+                for e in effs_state[sidx]:
+                    prod *= (1.0 - float(np.clip(e, 0.0, 1.0)))
+                eff[i, sidx] = 1.0 - prod
+            else:
+                eff[i, sidx] = 0.0
+
     return eff
 
 def predict_loss_for_ensayo(row_e, df_emerg, df_ttos,
@@ -274,7 +336,8 @@ def predict_loss_for_ensayo(row_e, df_emerg, df_ttos,
     A2_ctrl = float(np.sum(pl_ctrl * w_day * pc_mask))
 
     LAI_t = canopy_LAI_series(dates, siembra, t_lag=t_lag, t_close=t_close, lai_max=lai_max, k_beer=k_beer, mode=canopy_mode)
-    Ciec_t = np.clip((LAI_t / max(1e-6, float(LAIhc))) * (Ca / float(Cs)), 0.0, 1.0)
+    LAIhc = max(1e-6, float(LAIhc))  # clamp para evitar división por cero
+    Ciec_t = np.clip((LAI_t / LAIhc) * (Ca / float(Cs)), 0.0, 1.0)
     s_t = 1.0 - Ciec_t
 
     weights = pl_ctrl * w_day * pc_mask
@@ -419,10 +482,24 @@ with st.expander("5) Calibración", expanded=True):
         st.warning("Cargá el Excel antes de calibrar.")
 
     if run and df_e is not None and df_m is not None:
+        # Copias
         df_e = df_e.copy()
         df_t = df_t.copy() if df_t is not None else pd.DataFrame(columns=["ensayo_id"])
         df_m = df_m.copy()
 
+        # Normalización emergencia por ensayo
+        if {"ensayo_id","emer_rel"}.issubset(df_m.columns):
+            df_m = normalize_emerg_by_trial(df_m)
+
+        # Sanitización tratamientos
+        if not df_t.empty:
+            for c in ["eficacia_pct", "residual_dias", "actua_s1", "actua_s2", "actua_s3", "actua_s4"]:
+                if c in df_t.columns:
+                    df_t[c] = pd.to_numeric(df_t[c], errors="coerce")
+            if "fecha_aplicacion" in df_t.columns:
+                df_t["fecha_aplicacion"] = pd.to_datetime(df_t["fecha_aplicacion"], errors="coerce").dt.date
+
+        # loss_obs_pct si falta
         if "loss_obs_pct" not in df_e.columns:
             if {"rend_testigo_kg_ha","rend_observado_kg_ha"}.issubset(df_e.columns):
                 df_e["loss_obs_pct"] = 100.0 * (1.0 - (df_e["rend_observado_kg_ha"] / df_e["rend_testigo_kg_ha"]))
@@ -431,37 +508,39 @@ with st.expander("5) Calibración", expanded=True):
                 st.stop()
 
         bounds = {
-            "w_S1": (w1_lo, w1_hi),
-            "w_S2": (w2_lo, w2_hi),
-            "w_S3": (w3_lo, w3_hi),
-            "w_S4": (w4_lo, w4_hi),
-            "LAIhc": (LAIhc_lo, LAIhc_hi),
+            "w_S1": (float(w1_lo), float(w1_hi)),
+            "w_S2": (float(w2_lo), float(w2_hi)),
+            "w_S3": (float(w3_lo), float(w3_hi)),
+            "w_S4": (float(w4_lo), float(w4_hi)),
+            "LAIhc": (float(LAIhc_lo), float(LAIhc_hi)),
         }
         if calibrate_curve:
             bounds.update({
-                "alpha": (alpha_lo, alpha_hi),
-                "Lmax":  (Lmax_lo,  Lmax_hi),
+                "alpha": (float(alpha_lo), float(alpha_hi)),
+                "Lmax":  (float(Lmax_lo),  float(Lmax_hi)),
             })
 
         S1 = (int(s1_ini), int(s1_fin))
         S2 = (int(s2_ini), int(s2_fin))
         S3 = (int(s3_ini), int(s3_fin))
 
+        cmode = _canon_mode_string(canopy_mode)
+
         def objective(params):
-            LAIhc_p = params["LAIhc"]
-            wS = [params["w_S1"], params["w_S2"], params["w_S3"], params["w_S4"]]
+            LAIhc_p = max(1e-6, float(params["LAIhc"]))  # clamp > 0
+            wS = [float(params["w_S1"]), float(params["w_S2"]), float(params["w_S3"]), float(params["w_S4"])]
             alpha_p = float(params.get("alpha", 0.375))
             Lmax_p  = float(params.get("Lmax",  76.639))
             preds, obs = [], []
             for _, row in df_e.iterrows():
                 ens_id = str(row["ensayo_id"])
                 sub_m = df_m[df_m["ensayo_id"]==ens_id]
-                sub_t = df_t[df_t["ensayo_id"]==ens_id]
+                sub_t = df_t[df_t["ensayo_id"]==ens_id] if not df_t.empty else pd.DataFrame(columns=["ensayo_id"])
                 res = predict_loss_for_ensayo(row, sub_m, sub_t, S1, S2, S3, wS,
                                               t_lag=int(t_lag), t_close=int(t_close),
                                               lai_max=float(lai_max), k_beer=float(k_beer),
                                               LAIhc=float(LAIhc_p),
-                                              canopy_mode="LAI" if canopy_mode=="LAI" else "COVER",
+                                              canopy_mode=cmode,
                                               alpha=alpha_p, Lmax=Lmax_p,
                                               cut_at_pc_fin=bool(cut_at_pc_fin))
                 if res["ok"]:
@@ -481,8 +560,8 @@ with st.expander("5) Calibración", expanded=True):
         st.write(f"**RMSE (global):** {best_rmse:.3f}")
 
         # Reconstrucción por ensayo con los mejores
-        LAIhc_p = best["LAIhc"]
-        wS = [best["w_S1"], best["w_S2"], best["w_S3"], best["w_S4"]]
+        LAIhc_p = max(1e-6, float(best["LAIhc"]))
+        wS = [float(best["w_S1"]), float(best["w_S2"]), float(best["w_S3"]), float(best["w_S4"])]
         alpha_p = float(best.get("alpha", 0.375))
         Lmax_p  = float(best.get("Lmax",  76.639))
 
@@ -490,12 +569,12 @@ with st.expander("5) Calibración", expanded=True):
         for _, row in df_e.iterrows():
             ens_id = str(row["ensayo_id"])
             sub_m = df_m[df_m["ensayo_id"]==ens_id]
-            sub_t = df_t[df_t["ensayo_id"]==ens_id]
+            sub_t = df_t[df_t["ensayo_id"]==ens_id] if not df_t.empty else pd.DataFrame(columns=["ensayo_id"])
             res = predict_loss_for_ensayo(row, sub_m, sub_t, S1, S2, S3, wS,
                                           t_lag=int(t_lag), t_close=int(t_close),
                                           lai_max=float(lai_max), k_beer=float(k_beer),
                                           LAIhc=float(LAIhc_p),
-                                          canopy_mode="LAI" if canopy_mode=="LAI" else "COVER",
+                                          canopy_mode=cmode,
                                           alpha=alpha_p, Lmax=Lmax_p,
                                           cut_at_pc_fin=bool(cut_at_pc_fin))
             if not res["ok"]:
@@ -505,14 +584,15 @@ with st.expander("5) Calibración", expanded=True):
                 "ensayo_id": ens_id, "ok": True,
                 "A2_ctrl": res["A2_ctrl"], "g_eq": res["g_eq"], "A2_eff": res["A2_eff"],
                 "Loss_obs_pct": float(row["loss_obs_pct"]), "Loss_pred_pct": res["Loss_pred"],
-                "LAI_mean": res["LAI_mean"], "alpha": alpha_p, "Lmax": Lmax_p
+                "LAI_mean": res["LAI_mean"], "alpha": alpha_p, "Lmax": Lmax_p,
+                "MAX_PLANTS_CAP": float(row.get("MAX_PLANTS_CAP", np.nan))
             })
         df_res = pd.DataFrame(rows)
         df_val = df_res[df_res["ok"]==True].copy()
         if not df_val.empty:
             rmse, mae = loss_metrics(df_val["Loss_obs_pct"], df_val["Loss_pred_pct"])
             st.write(f"**RMSE validación:** {rmse:.3f}  |  **MAE:** {mae:.3f}")
-            st.dataframe(df_val[["ensayo_id","A2_ctrl","g_eq","A2_eff","Loss_obs_pct","Loss_pred_pct","LAI_mean","alpha","Lmax"]].round(3),
+            st.dataframe(df_val[["ensayo_id","A2_ctrl","g_eq","A2_eff","Loss_obs_pct","Loss_pred_pct","LAI_mean","alpha","Lmax","MAX_PLANTS_CAP"]].round(3),
                          use_container_width=True)
 
             # Gráfico 1: Observado vs Predicho
@@ -555,8 +635,6 @@ with st.expander("Notas", expanded=False):
 - **Generador sintético** y descargas en memoria incluidos.
 """)
 
-# Botón de descarga del script actual (sin escribir a /mnt/data)
-import inspect, sys
 try:
     src = inspect.getsource(sys.modules["__main__"])
 except Exception:
