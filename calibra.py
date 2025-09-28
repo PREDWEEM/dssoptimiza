@@ -5,22 +5,23 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 from scipy.optimize import minimize
+import plotly.express as px
+import io
 
-# === 1. Interfaz de carga ===
 st.title("Calibración del modelo PREDWEEM")
 st.write("Subí un archivo Excel con hojas: **ensayos**, **tratamientos**, **emergencia**")
 
 uploaded_file = st.file_uploader("Cargar archivo Excel", type=["xlsx"])
 
 if uploaded_file is not None:
-    # === 2. Leer hojas ===
+    # === 1. Leer hojas ===
     df_ensayos = pd.read_excel(uploaded_file, sheet_name="ensayos")
     df_trat = pd.read_excel(uploaded_file, sheet_name="tratamientos")
     df_emerg = pd.read_excel(uploaded_file, sheet_name="emergencia")
 
     st.success("Archivo cargado correctamente ✅")
 
-    # === 3. Funciones auxiliares ===
+    # === 2. Funciones auxiliares ===
     def interpolate_emergencia(sub_emerg, fecha_siembra, fecha_pcfin):
         fechas = pd.date_range(start=fecha_siembra, end=fecha_pcfin, freq="D")
         serie = sub_emerg.set_index("fecha").reindex(fechas).interpolate(method="linear").fillna(0)
@@ -74,7 +75,7 @@ if uploaded_file is not None:
             obs.append(row.loss_obs_pct)
         return np.sqrt(np.mean((np.array(obs) - np.array(preds)) ** 2))
 
-    # === 4. Botón de calibración ===
+    # === 3. Botón de calibración ===
     if st.button("Ejecutar calibración"):
         x0 = [0.3, 80.0]
         res = minimize(objective, x0, bounds=[(0.01, 2.0), (10, 200)], method="L-BFGS-B")
@@ -90,8 +91,34 @@ if uploaded_file is not None:
         df_results["predicho"] = [
             simular_ensayo(row, alpha_best, Lmax_best) for _, row in df_ensayos.iterrows()
         ]
+
+        # Mostrar tabla
         st.write("### Comparación Observado vs Predicho")
         st.dataframe(df_results[["ensayo_id", "loss_obs_pct", "predicho"]])
 
-        st.line_chart(df_results[["loss_obs_pct", "predicho"]].set_index(df_results.ensayo_id))
+        # Gráfico Observado vs Predicho
+        fig = px.scatter(
+            df_results,
+            x="loss_obs_pct",
+            y="predicho",
+            text="ensayo_id",
+            title="Observado vs Predicho",
+            labels={"loss_obs_pct": "Observado (%)", "predicho": "Predicho (%)"}
+        )
+        # Línea 1:1
+        max_val = max(df_results["loss_obs_pct"].max(), df_results["predicho"].max())
+        fig.add_shape(type="line", x0=0, y0=0, x1=max_val, y1=max_val,
+                      line=dict(color="red", dash="dash"))
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Descargar resultados en Excel
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+            df_results.to_excel(writer, sheet_name="resultados", index=False)
+        st.download_button(
+            label="📥 Descargar resultados en Excel",
+            data=output.getvalue(),
+            file_name="calibracion_resultados.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
