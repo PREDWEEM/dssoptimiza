@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
-# app_calibra_estados_normalizada_opt_trat_pre.py
+# app_calibra_estados_normalizada_opt_trat_pre_diag_cacs.py
 # Streamlit — Calibración con x (S1–S4) normalizada por duración + función HIPERBÓLICA
 # + Optimización de pesos w_S1..w_S4
-# + Tratamientos: PRE (presiembra / preemergente residuales) y POST (por estados) con residualidad
+# + Tratamientos: PRE (presiembra / preemergente) y POST (por estados) con residualidad
+# + Diagnóstico de factores PRE/POST promedio en el PC por ensayo
+# + Ca/Cs por ensayo opcional (si están en la hoja 'ensayos')
 #
 # Requiere: pandas, numpy, plotly, streamlit. (Opcional: scipy, xlsxwriter, kaleido)
 
@@ -12,8 +14,8 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="Calibración + Pesos + Tratamientos (PRE/POST)", layout="wide")
-st.title("Calibración — x (S1–S4) normalizada + Hiperbólica · Pesos + Tratamientos (PRE/POST)")
+st.set_page_config(page_title="Calibración + Pesos + Tratamientos + Ca/Cs por ensayo", layout="wide")
+st.title("Calibración — x (S1–S4) normalizada + Hiperbólica · Pesos + Tratamientos (PRE/POST) + Diagnóstico + Ca/Cs por ensayo")
 
 uploaded = st.file_uploader("📥 Subí tu Excel con hojas: `ensayos`, `emergencia` (y opcional `tratamientos`)", type=["xlsx"])
 st.caption(
@@ -37,9 +39,11 @@ with st.sidebar:
     cov_max = st.number_input("Cobertura máxima (%)", 10.0, 100.0, 85.0, 1.0)
     lai_max = st.number_input("LAI máx", 0.0, 10.0, 3.5, 0.1)
     k_beer  = st.number_input("k Beer–Lambert", 0.10, 1.50, 0.60, 0.05)
-    Ca      = st.number_input("Ca (pl·m²)", 50, 700, 250, 10)
-    Cs      = st.number_input("Cs (pl·m²)", 50, 700, 250, 10)
+    Ca_glob = st.number_input("Ca global (pl·m²)", 50, 700, 250, 10)
+    Cs_glob = st.number_input("Cs global (pl·m²)", 50, 700, 250, 10)
     LAIhc   = st.number_input("LAIhc", 0.5, 10.0, 3.5, 0.1)
+    use_ca_cs_per_trial = st.checkbox("Usar Ca/Cs por ensayo (si están en 'ensayos')", value=True,
+                                      help="Si la fila del ensayo tiene Ca/Cs > 0, reemplaza a los valores globales.")
 
     st.header("Tratamientos (Excel)")
     apply_pre  = st.checkbox("Aplicar PRE (presiembra / preemergente) sobre la emergencia", value=True,
@@ -74,8 +78,11 @@ with st.sidebar:
     n_al = st.number_input("Intentos α–Lmax por combinación", 20, 2000, 300, 20,
                            help="Usa aleatorio rápido (sin scipy) para velocidad")
     seed = st.number_input("Seed", 0, 10_000, 2025, 1)
-    st.markdown("---")
 
+    st.header("Diagnóstico")
+    show_diag = st.checkbox("Mostrar diagnóstico PRE/POST por ensayo", value=True)
+
+    st.markdown("---")
     run = st.button("🧠 Ejecutar calibración", use_container_width=True)
 
 # ================= Utilidades =================
@@ -211,18 +218,14 @@ def _safe_num(x, default=0.0):
 def _is_pre_row(row, detection_mode: str) -> bool:
     if detection_mode == "Por columna 'actua_pre'":
         return int(_safe_num(row.get("actua_pre", 0), 0)) == 1
-    # Por 'tipo'
     t = str(row.get("tipo", "")).strip().lower()
     return ("pre" in t) or ("preemerg" in t) or ("presiembra" in t)
 
 def apply_pre_to_daily(daily_eff: np.ndarray, idx: pd.DatetimeIndex, trts_sub: pd.DataFrame,
-                       detection_mode: str) -> np.ndarray:
-    """
-    PRE: descuenta 'nacimientos' (emergencia diaria) multiplicativamente durante la residualidad.
-    Detecta filas PRE por 'tipo' o por columna 'actua_pre'==1.
-    """
+                       detection_mode: str, return_ctrl=False):
+    """PRE: descuenta emergencia diaria multiplicativamente; opcionalmente devuelve el vector de control."""
     if trts_sub is None or trts_sub.empty:
-        return daily_eff
+        return (daily_eff, np.ones(len(idx))) if return_ctrl else daily_eff
     ctrl = np.ones(len(idx), dtype=float)
     for _, t in trts_sub.iterrows():
         if not _is_pre_row(t, detection_mode):
@@ -234,15 +237,16 @@ def apply_pre_to_daily(daily_eff: np.ndarray, idx: pd.DatetimeIndex, trts_sub: p
         r = int(_safe_num(t.get("residual_dias", 0.0), 0.0))
         mask = (idx >= f_ap) & (idx <= (f_ap + pd.Timedelta(days=r)))
         ctrl[mask] *= (1.0 - e)
-    return daily_eff * ctrl
+    daily_out = daily_eff * ctrl
+    return (daily_out, ctrl) if return_ctrl else daily_out
 
 def apply_post_to_states(states_df: pd.DataFrame, idx: pd.DatetimeIndex,
-                         trts_sub: pd.DataFrame, only_gram: bool=False) -> pd.DataFrame:
-    """
-    POST: descuenta estados S1..S4 multiplicativamente durante la residualidad.
-    Usa actua_s1..actua_s4 (si faltan, asume 1).
-    """
+                         trts_sub: pd.DataFrame, only_gram: bool=False, return_ctrl=False):
+    """POST: descuenta estados S1..S4 multiplicativamente; opcionalmente devuelve controles por estado."""
     if trts_sub is None or trts_sub.empty:
+        if return_ctrl:
+            ones = np.ones(len(idx))
+            return states_df, {"S1": ones, "S2": ones, "S3": ones, "S4": ones}
         return states_df
     S = states_df.copy()
     n = len(idx)
@@ -268,23 +272,33 @@ def apply_post_to_states(states_df: pd.DataFrame, idx: pd.DatetimeIndex,
         if a4: ctrl["S4"][mask] *= (1.0 - e)
     for k in ["S1","S2","S3","S4"]:
         S[k] = S[k].to_numpy(float) * ctrl[k]
-    return S
+    return (S, ctrl) if return_ctrl else S
 
-# ---------------- x builder ----------------
+# ---------------- x builder + diagnóstico ----------------
 def build_x_given_weights(ens, emer, w1, w2, w3, w4,
                           use_ciec=True, mode_canopy="Cobertura (%)",
                           t_lag=7, t_close=45, cov_max=85.0, lai_max=3.5, k_beer=0.60,
-                          Ca=250, Cs=250, LAIhc=3.5,
+                          Ca_gl=250, Cs_gl=250, LAIhc=3.5,
+                          use_ca_cs_per_trial=True,
                           t4_mode="Dinámico (en PC)", scale_basis="AUC total (siembra→fin)",
                           trts=None, apply_pre=True, detection_mode_pre="Por 'tipo'",
-                          apply_post=True, only_gram=False):
-    """Devuelve x por ensayo según pesos dados (con PRE sobre emergencia y POST sobre estados)."""
+                          apply_post=True, only_gram=False,
+                          want_diag=True):
+    """
+    Devuelve x por ensayo y (opcional) un diagnóstico con factores PRE/POST promedio en PC.
+    """
     L1, L2, L3 = 7, 21, 32
     ens2 = ens.copy()
     ens2["MAX_PLANTS_CAP"] = pd.to_numeric(ens2["MAX_PLANTS_CAP"], errors="coerce").fillna(0)
     ens2["pc_ini"] = ens2.apply(lambda r: r["pc_ini"] if pd.notna(r["pc_ini"]) else r["fecha_siembra"], axis=1)
+    if "Ca" in ens2.columns:
+        ens2["Ca"] = pd.to_numeric(ens2["Ca"], errors="coerce")
+    if "Cs" in ens2.columns:
+        ens2["Cs"] = pd.to_numeric(ens2["Cs"], errors="coerce")
 
     xs = []
+    diag_rows = []
+
     for _, row in ens2.iterrows():
         ens_id = row["ensayo_id"]
         f_sow  = pd.to_datetime(row["fecha_siembra"])
@@ -293,11 +307,25 @@ def build_x_given_weights(ens, emer, w1, w2, w3, w4,
         cap    = float(row["MAX_PLANTS_CAP"])
 
         if pd.isna(f_sow) or pd.isna(pc_fin) or cap <= 0:
-            xs.append(0.0); continue
+            xs.append(0.0)
+            if want_diag:
+                diag_rows.append(dict(
+                    ensayo_id=ens_id, AUC_total=np.nan, AUC_PC=np.nan, CAP=cap, factor=np.nan,
+                    PRE_factor_mean_PC=np.nan, POST_S1=np.nan, POST_S2=np.nan, POST_S3=np.nan, POST_S4=np.nan,
+                    POST_mean_PC=np.nan, Ca_usado=np.nan, Cs_usado=np.nan
+                ))
+            continue
 
         sub = emer[emer["ensayo_id"] == ens_id][["fecha", "emer_rel"]].dropna().copy()
         if sub.empty:
-            xs.append(0.0); continue
+            xs.append(0.0)
+            if want_diag:
+                diag_rows.append(dict(
+                    ensayo_id=ens_id, AUC_total=np.nan, AUC_PC=np.nan, CAP=cap, factor=np.nan,
+                    PRE_factor_mean_PC=np.nan, POST_S1=np.nan, POST_S2=np.nan, POST_S3=np.nan, POST_S4=np.nan,
+                    POST_mean_PC=np.nan, Ca_usado=np.nan, Cs_usado=np.nan
+                ))
+            continue
 
         sub["emer_rel"] = pd.to_numeric(sub["emer_rel"], errors="coerce").fillna(0.0)
         sub["emer_rel"] = np.clip(sub["emer_rel"], 0.0, None)
@@ -312,29 +340,48 @@ def build_x_given_weights(ens, emer, w1, w2, w3, w4,
         auc_total = auc(s.index, s.values)
         mask_pc = (s.index >= pc_ini) & (s.index <= pc_fin)
         if not mask_pc.any():
-            xs.append(0.0); continue
+            xs.append(0.0)
+            if want_diag:
+                diag_rows.append(dict(
+                    ensayo_id=ens_id, AUC_total=float(auc_total), AUC_PC=np.nan, CAP=cap, factor=np.nan,
+                    PRE_factor_mean_PC=np.nan, POST_S1=np.nan, POST_S2=np.nan, POST_S3=np.nan, POST_S4=np.nan,
+                    POST_mean_PC=np.nan, Ca_usado=np.nan, Cs_usado=np.nan
+                ))
+            continue
         auc_pc = auc(s.index[mask_pc], s.values[mask_pc])
 
         EPS = 1e-6
         base = max(auc_pc if scale_basis.startswith("AUC en PC") else auc_total, EPS)
         factor = cap / base
 
+        # Ca/Cs por ensayo (si corresponde)
+        if use_ca_cs_per_trial:
+            Ca_i = row["Ca"] if ("Ca" in ens2.columns and pd.notna(row["Ca"]) and float(row["Ca"]) > 0) else Ca_gl
+            Cs_i = row["Cs"] if ("Cs" in ens2.columns and pd.notna(row["Cs"]) and float(row["Cs"]) > 0) else Cs_gl
+        else:
+            Ca_i, Cs_i = Ca_gl, Cs_gl
+
         # (1−Ciec) opcional sobre la emergencia
         if use_ciec:
             Ciec = ciec_series(
                 s.index, f_sow, mode_canopy, int(t_lag), int(t_close),
-                float(cov_max), float(lai_max), float(k_beer), int(Ca if Ca > 0 else 1),
-                int(Cs if Cs > 0 else 1), float(LAIhc)
+                float(cov_max), float(lai_max), float(k_beer),
+                int(Ca_i if float(Ca_i) > 0 else 1), int(Cs_i if float(Cs_i) > 0 else 1), float(LAIhc)
             )
             daily_eff = s.values * (1.0 - Ciec) * factor
         else:
             daily_eff = s.values * factor
 
-        # --- PRE: descuenta 'nacimientos' (emergencia) durante residualidad ---
+        pre_ctrl_vec = np.ones(len(s.index))
+        post_ctrl = {"S1": np.ones(len(s.index)), "S2": np.ones(len(s.index)),
+                     "S3": np.ones(len(s.index)), "S4": np.ones(len(s.index))}
+
+        # --- PRE: descuenta emergencia durante residualidad ---
         if trts is not None and apply_pre:
             trts_sub = trts[trts["ensayo_id"] == ens_id].copy()
             if not trts_sub.empty:
-                daily_eff = apply_pre_to_daily(daily_eff, s.index, trts_sub, detection_mode_pre)
+                daily_eff, pre_ctrl_vec = apply_pre_to_daily(daily_eff, s.index, trts_sub,
+                                                             detection_mode_pre, return_ctrl=True)
 
         # Estados base a partir de la emergencia (ya afectada por PRE)
         states = non_overlapping_states(pd.Series(daily_eff, index=s.index))
@@ -343,7 +390,8 @@ def build_x_given_weights(ens, emer, w1, w2, w3, w4,
         if trts is not None and apply_post:
             trts_sub = trts[trts["ensayo_id"] == ens_id].copy()
             if not trts_sub.empty:
-                states = apply_post_to_states(states, s.index, trts_sub, only_gram=only_gram)
+                states, post_ctrl = apply_post_to_states(states, s.index, trts_sub,
+                                                         only_gram=only_gram, return_ctrl=True)
 
         # T4 fijo o dinámico
         if t4_mode.startswith("Fijo"):
@@ -361,12 +409,30 @@ def build_x_given_weights(ens, emer, w1, w2, w3, w4,
         x_val_i = float(auc(s.index[mask_pc], D[mask_pc]))
         xs.append(x_val_i)
 
-    return np.array(xs, dtype=float)
+        if want_diag:
+            # Promedios de factores dentro del PC
+            pre_mean_pc = float(np.mean(pre_ctrl_vec[mask_pc])) if np.any(mask_pc) else np.nan
+            post_means = {}
+            for k in ["S1","S2","S3","S4"]:
+                v = post_ctrl[k][mask_pc]
+                post_means[k] = float(np.mean(v)) if len(v) else np.nan
+            post_mean_pc = float(np.nanmean([post_means["S1"], post_means["S2"], post_means["S3"], post_means["S4"]]))
+            diag_rows.append(dict(
+                ensayo_id=ens_id, AUC_total=float(auc_total), AUC_PC=float(auc_pc), CAP=cap, factor=float(factor),
+                PRE_factor_mean_PC=pre_mean_pc,
+                POST_S1=post_means["S1"], POST_S2=post_means["S2"],
+                POST_S3=post_means["S3"], POST_S4=post_means["S4"],
+                POST_mean_PC=post_mean_pc, Ca_usado=float(Ca_i), Cs_usado=float(Cs_i)
+            ))
+
+    x_arr = np.array(xs, dtype=float)
+    diag_df = pd.DataFrame(diag_rows) if want_diag else None
+    return x_arr, diag_df
 
 def optimize_weights(ens, emer, y_obs, n_weights=200, n_al=300, seed=2025,
                      use_ciec=True, mode_canopy="Cobertura (%)",
                      t_lag=7, t_close=45, cov_max=85.0, lai_max=3.5, k_beer=0.60,
-                     Ca=250, Cs=250, LAIhc=3.5,
+                     Ca_gl=250, Cs_gl=250, LAIhc=3.5, use_ca_cs_per_trial=True,
                      t4_mode="Dinámico (en PC)", scale_basis="AUC total (siembra→fin)",
                      trts=None, apply_pre=True, detection_mode_pre="Por 'tipo'",
                      apply_post=True, only_gram=False):
@@ -380,12 +446,12 @@ def optimize_weights(ens, emer, y_obs, n_weights=200, n_al=300, seed=2025,
         w3 = rng.uniform(w2, 2.0)
         w4 = rng.uniform(w3, 2.0)
 
-        x_val = build_x_given_weights(
+        x_val, _ = build_x_given_weights(
             ens, emer, w1, w2, w3, w4,
             use_ciec, mode_canopy, t_lag, t_close, cov_max, lai_max, k_beer,
-            Ca, Cs, LAIhc, t4_mode, scale_basis,
-            trts=trts, apply_pre=apply_pre, detection_mode_pre=detection_mode_pre,
-            apply_post=apply_post, only_gram=only_gram
+            Ca_gl, Cs_gl, LAIhc, use_ca_cs_per_trial,
+            t4_mode, scale_basis, trts, apply_pre, detection_mode_pre,
+            apply_post, only_gram, want_diag=False
         )
         fit = calibrate_hyperbolic_quick(x_val, y_obs, iters=int(n_al), seed=7 + it)
         rec = dict(w_S1=w1, w_S2=w2, w_S3=w3, w_S4=w4,
@@ -418,12 +484,15 @@ except Exception as e:
     st.error(f"No pude leer el Excel: {e}")
     st.stop()
 
-# Normalizar fechas
+# Normalizar fechas y Ca/Cs
 for c in ["fecha_siembra", "pc_ini", "pc_fin"]:
     ens[c] = pd.to_datetime(ens[c], errors="coerce")
 emer["fecha"] = pd.to_datetime(emer["fecha"], errors="coerce")
 if trts is not None and not trts.empty and "fecha_aplicacion" in trts.columns:
     trts["fecha_aplicacion"] = pd.to_datetime(trts["fecha_aplicacion"], errors="coerce")
+for col in ["Ca", "Cs"]:
+    if col in ens.columns:
+        ens[col] = pd.to_numeric(ens[col], errors="coerce")
 
 # Chequeo de columnas
 need_ens = {"ensayo_id", "loss_obs_pct", "MAX_PLANTS_CAP", "fecha_siembra", "pc_ini", "pc_fin"}
@@ -440,21 +509,23 @@ if (ens["MAX_PLANTS_CAP"] <= 0).any():
 # Si pc_ini es NaT, usar fecha_siembra como proxy
 ens["pc_ini"] = ens.apply(lambda r: r["pc_ini"] if pd.notna(r["pc_ini"]) else r["fecha_siembra"], axis=1)
 
-# Construir x con pesos manuales y calibrar
-def compute_x_and_fit(ens, emer, w1, w2, w3, w4):
-    x_val = build_x_given_weights(
+# ========= Calcular x + fit (pesos manuales) =========
+def compute_x_fit_diag(ens, emer, w1, w2, w3, w4):
+    x_val, diag_df = build_x_given_weights(
         ens, emer, w1, w2, w3, w4,
-        use_ciec, mode_canopy, t_lag, t_close, cov_max, lai_max, k_beer,
-        Ca, Cs, LAIhc, t4_mode, scale_basis,
+        use_ciec, mode_canopy, int(t_lag), int(t_close), float(cov_max), float(lai_max), float(k_beer),
+        int(Ca_glob), int(Cs_glob), float(LAIhc), bool(use_ca_cs_per_trial),
+        t4_mode, scale_basis,
         trts=trts, apply_pre=apply_pre, detection_mode_pre=pre_detection,
-        apply_post=apply_post, only_gram=only_graminicidas
+        apply_post=apply_post, only_gram=only_graminicidas,
+        want_diag=True
     )
     y_obs = ens["loss_obs_pct"].astype(float).to_numpy()
     fit = calibrate_hyperbolic_exact(x_val, y_obs, float(alpha0), float(Lmax0))
-    return x_val, y_obs, fit
+    return x_val, y_obs, fit, diag_df
 
 with st.spinner("Calculando x y calibrando (pesos actuales)…"):
-    x_val_manual, y_obs, fit_manual = compute_x_and_fit(ens, emer, w_s1, w_s2, w_s3, w_s4)
+    x_val_manual, y_obs, fit_manual, diag_manual = compute_x_fit_diag(ens, emer, w_s1, w_s2, w_s3, w_s4)
 
 # Mostrar resultados con pesos manuales
 st.subheader("Resultados con pesos actuales (manuales)")
@@ -464,6 +535,11 @@ ens_out = ens[["ensayo_id", "loss_obs_pct", "MAX_PLANTS_CAP"]].copy()
 ens_out["x_pl_m2_states"] = x_val_manual
 ens_out["predicho"] = fit_manual["yhat"]
 st.dataframe(ens_out, use_container_width=True)
+
+# Diagnóstico PRE/POST (manual)
+if show_diag and diag_manual is not None:
+    st.subheader("Diagnóstico de tratamientos dentro del PC (pesos manuales)")
+    st.dataframe(diag_manual, use_container_width=True)
 
 # Gráfico Obs vs Pred (manual)
 fig_m = go.Figure()
@@ -479,8 +555,9 @@ mx_m = max(float(ens_out["loss_obs_pct"].max()), float(ens_out["predicho"].max()
 fig_m.add_trace(go.Scatter(x=[0, mx_m], y=[0, mx_m], mode="lines", name="1:1", line=dict(dash="dash")))
 tag_pre = "Sí" if (apply_pre and trts is not None) else "No"
 tag_post = "Sí" if (apply_post and trts is not None) else "No"
+tag_cacs = "por ensayo" if use_ca_cs_per_trial else "global"
 fig_m.update_layout(
-    title=f"Observado vs Predicho — (manual) · PRE:{tag_pre} · POST:{tag_post}",
+    title=f"Observado vs Predicho — (manual) · PRE:{tag_pre} · POST:{tag_post} · Ca/Cs:{tag_cacs}",
     xaxis_title="Observado (%)", yaxis_title="Predicho (%)",
     margin=dict(l=10, r=10, t=40, b=10)
 )
@@ -508,7 +585,8 @@ if do_opt and run:
             use_ciec=use_ciec, mode_canopy=mode_canopy,
             t_lag=int(t_lag), t_close=int(t_close),
             cov_max=float(cov_max), lai_max=float(lai_max), k_beer=float(k_beer),
-            Ca=int(Ca), Cs=int(Cs), LAIhc=float(LAIhc),
+            Ca_gl=int(Ca_glob), Cs_gl=int(Cs_glob), LAIhc=float(LAIhc),
+            use_ca_cs_per_trial=bool(use_ca_cs_per_trial),
             t4_mode=t4_mode, scale_basis=scale_basis,
             trts=trts, apply_pre=apply_pre, detection_mode_pre=pre_detection,
             apply_post=apply_post, only_gram=only_graminicidas
@@ -520,13 +598,15 @@ if do_opt and run:
         f"RMSE={best['RMSE']:.2f}, MAE={best['MAE']:.2f}, R²={best['R2']:.3f}"
     )
 
-    # Recalcular x y fit exacto con los mejores pesos (fuera del loop rápido)
-    x_val_best = build_x_given_weights(
+    # Recalcular x y fit exacto con los mejores pesos (y diagnóstico)
+    x_val_best, diag_best = build_x_given_weights(
         ens, emer, best["w_S1"], best["w_S2"], best["w_S3"], best["w_S4"],
-        use_ciec, mode_canopy, t_lag, t_close, cov_max, lai_max, k_beer,
-        Ca, Cs, LAIhc, t4_mode, scale_basis,
+        use_ciec, mode_canopy, int(t_lag), int(t_close), float(cov_max), float(lai_max), float(k_beer),
+        int(Ca_glob), int(Cs_glob), float(LAIhc), bool(use_ca_cs_per_trial),
+        t4_mode, scale_basis,
         trts=trts, apply_pre=apply_pre, detection_mode_pre=pre_detection,
-        apply_post=apply_post, only_gram=only_graminicidas
+        apply_post=apply_post, only_gram=only_graminicidas,
+        want_diag=True
     )
     fit_best_exact = calibrate_hyperbolic_exact(x_val_best, y_obs, float(alpha0), float(Lmax0))
 
@@ -547,7 +627,7 @@ if do_opt and run:
     mx_b = max(float(out_best["loss_obs_pct"].max()), float(out_best["predicho"].max()), 1.0)
     fig_b.add_trace(go.Scatter(x=[0, mx_b], y=[0, mx_b], mode="lines", name="1:1", line=dict(dash="dash")))
     fig_b.update_layout(
-        title=f"Observado vs Predicho — (mejores pesos) · PRE:{tag_pre} · POST:{tag_post}",
+        title=f"Observado vs Predicho — (mejores pesos) · PRE:{tag_pre} · POST:{tag_post} · Ca/Cs:{tag_cacs}",
         xaxis_title="Observado (%)", yaxis_title="Predicho (%)",
         margin=dict(l=10, r=10, t=40, b=10)
     )
@@ -566,6 +646,11 @@ if do_opt and run:
     )
     st.plotly_chart(fig_b2, use_container_width=True)
 
+    # Diagnóstico PRE/POST (mejor)
+    if show_diag and diag_best is not None:
+        st.subheader("Diagnóstico de tratamientos dentro del PC (mejores pesos)")
+        st.dataframe(diag_best, use_container_width=True)
+
     # ---- Descargas (mejores pesos) ----
     st.subheader("Descargas (mejores pesos)")
     c1, c2, c3 = st.columns(3)
@@ -581,6 +666,7 @@ if do_opt and run:
         bio = io.BytesIO()
         with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
             out_best.to_excel(writer, sheet_name="resultados", index=False)
+            (diag_best if diag_best is not None else pd.DataFrame()).to_excel(writer, sheet_name="diagnostico_tratamientos", index=False)
             pd.DataFrame({
                 "w_S1": [best["w_S1"]], "w_S2": [best["w_S2"]],
                 "w_S3": [best["w_S3"]], "w_S4": [best["w_S4"]],
@@ -589,7 +675,8 @@ if do_opt and run:
                 "t4_mode": [t4_mode], "use_ciec": [use_ciec], "scale_basis": [scale_basis],
                 "canopy_mode": [mode_canopy], "t_lag": [t_lag], "t_close": [t_close],
                 "cov_max": [cov_max], "lai_max": [lai_max], "k_beer": [k_beer],
-                "Ca": [Ca], "Cs": [Cs], "LAIhc": [LAIhc],
+                "Ca_global": [Ca_glob], "Cs_global": [Cs_glob], "LAIhc": [LAIhc],
+                "usar_CaCs_por_ensayo": [bool(use_ca_cs_per_trial)],
                 "PRE_aplicado": [bool(apply_pre and trts is not None)],
                 "POST_aplicado": [bool(apply_post and trts is not None)],
                 "POST_solo_graminicidas": [bool(only_graminicidas)]
@@ -625,6 +712,7 @@ with c2:
     bio = io.BytesIO()
     with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
         ens_out.to_excel(writer, sheet_name="resultados", index=False)
+        (diag_manual if (show_diag and diag_manual is not None) else pd.DataFrame()).to_excel(writer, sheet_name="diagnostico_tratamientos", index=False)
         pd.DataFrame({
             "alpha": [fit_manual["alpha"]], "Lmax": [fit_manual["Lmax"]],
             "RMSE": [fit_manual["rmse"]], "MAE": [fit_manual["mae"]], "R2": [fit_manual["r2"]],
@@ -632,7 +720,8 @@ with c2:
             "w_S1": [w_s1], "w_S2": [w_s2], "w_S3": [w_s3], "w_S4": [w_s4],
             "canopy_mode": [mode_canopy], "t_lag": [t_lag], "t_close": [t_close],
             "cov_max": [cov_max], "lai_max": [lai_max], "k_beer": [k_beer],
-            "Ca": [Ca], "Cs": [Cs], "LAIhc": [LAIhc],
+            "Ca_global": [Ca_glob], "Cs_global": [Cs_glob], "LAIhc": [LAIhc],
+            "usar_CaCs_por_ensayo": [bool(use_ca_cs_per_trial)],
             "PRE_aplicado": [bool(apply_pre and trts is not None)],
             "POST_aplicado": [bool(apply_post and trts is not None)],
             "POST_solo_graminicidas": [bool(only_graminicidas)]
@@ -655,8 +744,9 @@ with c3:
         "canopy": {
             "mode": mode_canopy, "t_lag": int(t_lag), "t_close": int(t_close),
             "cov_max": float(cov_max), "lai_max": float(lai_max),
-            "k_beer": float(k_beer), "Ca": float(Ca), "Cs": float(Cs), "LAIhc": float(LAIhc)
+            "k_beer": float(k_beer), "Ca_global": float(Ca_glob), "Cs_global": float(Cs_glob), "LAIhc": float(LAIhc)
         },
+        "use_ca_cs_per_trial": bool(use_ca_cs_per_trial),
         "scale_basis": ("AUC_PC" if scale_basis.startswith("AUC en PC") else "AUC_total"),
         "treatments": {
             "PRE_aplicado": bool(apply_pre and trts is not None),
