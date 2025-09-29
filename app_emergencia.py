@@ -202,7 +202,10 @@ modo_pc = st.sidebar.radio("Modo de cálculo de densidad efectiva",
 # Selección del rango de fechas para el PC
 pc_range = st.sidebar.date_input(
     "Rango de fechas del PC",
-    value=(sow_date + dt.timedelta(days=20), sow_date + dt.timedelta(days=60)),
+    pc_range = st.sidebar.date_input(
+    "Rango de fechas del PC",
+    value=(dt.date.today(), dt.date.today() + dt.timedelta(days=40))
+)
     min_value=sow_date,
     max_value=ts.max().date()
 )
