@@ -522,9 +522,19 @@ else:
 # ===== pérdidas vs x =====
 if factor_area_to_plants is not None:
     weights = {"S1": 0.0, "S2": 0.3, "S3": 0.6, "S4": 1.0}
-    S_states = {"S1": S1_pl, "S2": S2_pl, "S3": S3_pl, "S4": S4_pl}
-    S_states_ctrl = {"S1": S1_pl_ctrl, "S2": S2_pl_ctrl,
-                     "S3": S3_pl_ctrl, "S4": S4_pl_ctrl}
+
+    S_states = {
+        "S1": S1_pl,
+        "S2": S2_pl,
+        "S3": S3_pl,
+        "S4": S4_pl,
+    }
+    S_states_ctrl = {
+        "S1": S1_pl_ctrl,
+        "S2": S2_pl_ctrl,
+        "S3": S3_pl_ctrl,
+        "S4": S4_pl_ctrl,
+    }
 
     X2 = effective_density(ts, S_states, weights, mask_since_sow.to_numpy())
     X3 = effective_density(ts, S_states_ctrl, weights, mask_since_sow.to_numpy())
@@ -729,13 +739,26 @@ def evaluate(sd: dt.date, schedule: list):
     tot_ctrl = S1_pl*c1 + S2_pl*c2 + S3_pl*c3 + S4_pl*c4
     plantas_ctrl_cap = np.minimum(tot_ctrl, sup_cap)
 
-   weights = {"S1": 0.0, "S2": 0.3, "S3": 0.6, "S4": 1.0}
-S_states = {"S1": S1_pl, "S2": S2_pl, "S3": S3_pl, "S4": S4_pl}
-S_states_ctrl = {"S1": S1_pl*c1, "S2": S2_pl*c2, "S3": S3_pl*c3, "S4": S4_pl*c4}
+        # --- densidad efectiva y pérdida ---
+    weights = {"S1": 0.0, "S2": 0.3, "S3": 0.6, "S4": 1.0}
 
-X2loc = effective_density(ts_local, S_states, weights, mask_since)
-X3loc = effective_density(ts_local, S_states_ctrl, weights, mask_since)
-loss3 = loss_hyperbolic(X3loc, alpha_user, Lmax_user)
+    S_states = {
+        "S1": S1_pl,
+        "S2": S2_pl,
+        "S3": S3_pl,
+        "S4": S4_pl,
+    }
+    S_states_ctrl = {
+        "S1": S1_pl * c1,
+        "S2": S2_pl * c2,
+        "S3": S3_pl * c3,
+        "S4": S4_pl * c4,
+    }
+
+    X2loc = effective_density(ts_local, S_states, weights, mask_since)
+    X3loc = effective_density(ts_local, S_states_ctrl, weights, mask_since)
+    loss3 = loss_hyperbolic(X3loc, alpha_user, Lmax_user)
+
 
     # A2
     auc_cruda_loc = env["auc_cruda"]
