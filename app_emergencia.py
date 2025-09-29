@@ -17,15 +17,29 @@ from urllib.error import URLError, HTTPError
 from datetime import timedelta
 import itertools, random, math as _math
 
-# ================== FUNCIÓN DE PÉRDIDA ==================
-def _loss(x):
+# ================== FUNCIÓN DE DENSIDAD Y PÉRDIDA ==================
+def effective_density(ts, S_states, weights, mask):
     """
-    Función de pérdida (% pérdida de rinde en función de la densidad efectiva).
-    Acepta escalares o arrays (NumPy).
-    Fórmula base: 0.375 * x / (1 + (0.375 * x / 76.639))
+    Calcula densidad efectiva (x) como AUC ponderada de estados S1..S4.
+    ts: serie temporal (pd.Series o np.array con fechas)
+    S_states: dict con arrays de S1..S4
+    weights: dict con pesos competitivos por estado
+    mask: booleano para filtrar desde siembra
     """
-    x = np.asarray(x, dtype=float)
-    return 0.375 * x / (1.0 + (0.375 * x / 76.639))
+    contrib = (weights["S1"] * S_states["S1"] +
+               weights["S2"] * S_states["S2"] +
+               weights["S3"] * S_states["S3"] +
+               weights["S4"] * S_states["S4"])
+    tdays = (pd.to_datetime(ts).astype("int64") / 86400e9).astype(float)
+    return float(np.trapz(contrib[mask], tdays[mask]))
+
+def loss_hyperbolic(x, alpha=0.375, Lmax=76.639):
+    """
+    Función hiperbólica de pérdida de rinde.
+    α controla la pendiente inicial, Lmax es la pérdida máxima (%).
+    """
+    x = np.asarray(x, float)
+    return (alpha * x) / (1.0 + (alpha / Lmax) * x)
 
 # Estado UI
 if "opt_running" not in st.session_state: st.session_state.opt_running = False
@@ -175,6 +189,7 @@ with st.expander("Seleccionar columnas y depurar datos", expanded=True):
     if is_cumulative: emerrel = emerrel.diff().fillna(0.0).clip(lower=0.0)
     emerrel = emerrel.clip(lower=0.0)
     df_plot = pd.DataFrame({"fecha": pd.to_datetime(df["fecha"]), "EMERREL": emerrel})
+    
 # ============= Siembra & Canopia =============
 years = df_plot["fecha"].dt.year.dropna().astype(int)
 year_ref = int(years.mode().iloc[0]) if len(years) else dt.date.today().year
@@ -374,6 +389,11 @@ with st.sidebar:
 
 # ================= Decaimiento opcional =================
 with st.sidebar:
+    st.header("Función de pérdida")
+    alpha_user = st.number_input("α (sensibilidad)", 0.01, 5.0, 0.375, 0.01)
+    Lmax_user  = st.number_input("Lmax (% pérdida máx)", 10.0, 200.0, 76.639, 1.0)
+
+with st.sidebar:
     st.header("Decaimiento en residuales")
     decaimiento_tipo = st.selectbox("Tipo de decaimiento", ["Ninguno", "Lineal", "Exponencial"], index=0)
     if decaimiento_tipo == "Exponencial":
@@ -500,14 +520,20 @@ else:
     A2_sup_final = A2_ctrl_final = float("nan")
 
 # ===== pérdidas vs x =====
-def perdida_rinde_pct(x): x = np.asarray(x, float); return 0.375 * x / (1.0 + (0.375 * x / 76.639))
 if factor_area_to_plants is not None:
-    X2 = float(np.nansum(plantas_supresion_cap[mask_since_sow]))
-    X3 = float(np.nansum(plantas_supresion_ctrl_cap[mask_since_sow]))
-    loss_x2_pct = float(perdida_rinde_pct(X2)) if np.isfinite(X2) else float("nan")
-    loss_x3_pct = float(perdida_rinde_pct(X3)) if np.isfinite(X3) else float("nan")
+    weights = {"S1": 0.0, "S2": 0.3, "S3": 0.6, "S4": 1.0}
+    S_states = {"S1": S1_pl, "S2": S2_pl, "S3": S3_pl, "S4": S4_pl}
+    S_states_ctrl = {"S1": S1_pl_ctrl, "S2": S2_pl_ctrl,
+                     "S3": S3_pl_ctrl, "S4": S4_pl_ctrl}
+
+    X2 = effective_density(ts, S_states, weights, mask_since_sow.to_numpy())
+    X3 = effective_density(ts, S_states_ctrl, weights, mask_since_sow.to_numpy())
+
+    loss_x2_pct = loss_hyperbolic(X2, alpha_user, Lmax_user)
+    loss_x3_pct = loss_hyperbolic(X3, alpha_user, Lmax_user)
 else:
-    X2 = X3 = float("nan"); loss_x2_pct = loss_x3_pct = float("nan")
+    X2 = X3 = float("nan")
+    loss_x2_pct = loss_x3_pct = float("nan")
 
 # ===== Gráfico 1 =====
 st.subheader(f"📊 Gráfico 1: EMERREL + aportes (cap A2={int(MAX_PLANTS_CAP)}) — Serie semanal (W-MON)")
@@ -703,9 +729,13 @@ def evaluate(sd: dt.date, schedule: list):
     tot_ctrl = S1_pl*c1 + S2_pl*c2 + S3_pl*c3 + S4_pl*c4
     plantas_ctrl_cap = np.minimum(tot_ctrl, sup_cap)
 
-    def _loss(x): x=float(x); return 0.375 * x / (1.0 + (0.375 * x / 76.639))
-    X2loc = float(np.nansum(sup_cap[mask_since])); X3loc = float(np.nansum(plantas_ctrl_cap[mask_since]))
-    loss3 = _loss(X3loc)
+   weights = {"S1": 0.0, "S2": 0.3, "S3": 0.6, "S4": 1.0}
+S_states = {"S1": S1_pl, "S2": S2_pl, "S3": S3_pl, "S4": S4_pl}
+S_states_ctrl = {"S1": S1_pl*c1, "S2": S2_pl*c2, "S3": S3_pl*c3, "S4": S4_pl*c4}
+
+X2loc = effective_density(ts_local, S_states, weights, mask_since)
+X3loc = effective_density(ts_local, S_states_ctrl, weights, mask_since)
+loss3 = loss_hyperbolic(X3loc, alpha_user, Lmax_user)
 
     # A2
     auc_cruda_loc = env["auc_cruda"]
@@ -1019,14 +1049,14 @@ if results:
         X3_b = float(np.nansum((S1c+S2c+S3c+S4c)[envb["mask_since_b"]]))
 
         x_curve = np.linspace(0.0, MAX_PLANTS_CAP, 400)
-        y_curve = _loss(x_curve)
+        y_curve = loss_hyperbolic(x_curve, alpha_user, Lmax_user)
 
         fig2_best = go.Figure()
-        fig2_best.add_trace(go.Scatter(x=x_curve, y=y_curve, mode="lines", name="Modelo pérdida % vs x"))
-        fig2_best.add_trace(go.Scatter(x=[X2_b], y=[_loss(X2_b)], mode="markers+text",
-                                       name="x₂ (sin ctrl)", text=[f"x₂={X2_b:.1f}"], textposition="top center"))
-        fig2_best.add_trace(go.Scatter(x=[X3_b], y=[_loss(X3_b)], mode="markers+text",
-                                       name="x₃ (con ctrl)", text=[f"x₃={X3_b:.1f}"], textposition="top right"))
+        y_curve = loss_hyperbolic(x_curve, alpha_user, Lmax_user)
+
+        fig2_best.add_trace(go.Scatter(x=[X2_b], y=[loss_hyperbolic(X2_b, alpha_user, Lmax_user)], ...))
+        fig2_best.add_trace(go.Scatter(x=[X3_b], y=[loss_hyperbolic(X3_b, alpha_user, Lmax_user)], ...))
+               
         fig2_best.update_layout(
             title="Figura 2 — Pérdida de rendimiento (%) vs x",
             xaxis_title="x (pl·m²)", yaxis_title="Pérdida (%)"
