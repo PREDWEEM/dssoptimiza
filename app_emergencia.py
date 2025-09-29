@@ -194,6 +194,18 @@ with st.expander("Seleccionar columnas y depurar datos", expanded=True):
 years = df_plot["fecha"].dt.year.dropna().astype(int)
 year_ref = int(years.mode().iloc[0]) if len(years) else dt.date.today().year
 sow_min = dt.date(year_ref, 5, 1); sow_max = dt.date(year_ref, 8, 1)
+    
+# === Selección del modo de densidad efectiva ===
+modo_pc = st.sidebar.radio("Modo de cálculo de densidad efectiva",
+                           ["Desde siembra", "Solo en PC"])
+
+# Selección del rango de fechas para el PC
+pc_range = st.sidebar.date_input(
+    "Rango de fechas del PC",
+    value=(sow_date + dt.timedelta(days=20), sow_date + dt.timedelta(days=60)),
+    min_value=sow_date,
+    max_value=ts.max().date()
+)
 
 with st.sidebar:
     st.header("Siembra & Canopia (para Ciec)")
@@ -755,8 +767,10 @@ def evaluate(sd: dt.date, schedule: list):
         "S4": S4_pl * c4,
     }
 
-    X2loc = effective_density(ts_local, S_states, weights, mask_since)
-    X3loc = effective_density(ts_local, S_states_ctrl, weights, mask_since)
+    mask_eff = build_mask_eff(ts, sow_date, modo_pc, pc_range)
+
+    X2 = effective_density(ts, S_states, weights, mask_eff.to_numpy())
+    X3 = effective_density(ts, S_states_ctrl, weights, mask_eff.to_numpy())
     loss3 = loss_hyperbolic(X3loc, alpha_user, Lmax_user)
 
 
@@ -923,6 +937,19 @@ else:
         status_ph.info("Listo para optimizar. Ajustá parámetros y presioná **Iniciar**.")
 
 # =================== Función auxiliar ===================
+
+def build_mask_eff(ts, sow_date, modo_pc, pc_range):
+    """
+    Devuelve la máscara booleana de acumulación según el modo de cálculo.
+    - "Desde siembra": desde la siembra hasta el final
+    - "Solo en PC": entre las fechas elegidas en pc_range
+    """
+    if modo_pc == "Desde siembra":
+        return (ts.dt.date >= sow_date)
+    else:
+        pc_ini, pc_fin = pc_range
+        return (ts.dt.date >= pc_ini) & (ts.dt.date <= pc_fin)
+
 def recompute_apply_best(best):
     sow_best = pd.to_datetime(best["sow"]).date()
     env = recompute_for_sow(sow_best)
@@ -930,7 +957,9 @@ def recompute_apply_best(best):
         return None
 
     ts_b, fechas_d_b = env["ts"], env["fechas_d"]
-    mask_since_b = env["mask_since"]
+    mask_eff_best = build_mask_eff(ts_best, sow_best, modo_pc, pc_range)
+    X2_b = effective_density(ts_best, S_states_best, weights, mask_eff_best)
+    X3_b = effective_density(ts_best, S_states_ctrl_best, weights, mask_eff_best)
     factor_area = env["factor_area"]
     S1p, S2p, S3p, S4p = env["S_pl"]
     sup_cap_b = env["sup_cap"]
