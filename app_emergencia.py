@@ -1077,12 +1077,30 @@ if results:
         fig2_best = go.Figure()
         y_curve = loss_hyperbolic(x_curve, alpha_user, Lmax_user)
 
-        fig2_best.add_trace(go.Scatter(x=[X2_b], y=[loss_hyperbolic(X2_b, alpha_user, Lmax_user)], ...))
-        fig2_best.add_trace(go.Scatter(x=[X3_b], y=[loss_hyperbolic(X3_b, alpha_user, Lmax_user)], ...))
-               
+        fig2_best.add_trace(
+    go.Scatter(
+        x=[X2_b],
+        y=[loss_hyperbolic(X2_b, alpha_user, Lmax_user)],
+        mode="markers+text",
+        name="X2",
+        text=["X2"],
+        textposition="top center"
+    )
+)
+        fig2_best.add_trace(
+    go.Scatter(
+        x=[X3_b],
+        y=[loss_hyperbolic(X3_b, alpha_user, Lmax_user)],
+        mode="markers+text",
+        name="X3",
+        text=["X3"],
+        textposition="bottom center"
+    )
+)       
+        
         fig2_best.update_layout(
-            title="Figura 2 — Pérdida de rendimiento (%) vs x",
-            xaxis_title="x (pl·m²)", yaxis_title="Pérdida (%)"
+        title="Figura 2 — Pérdida de rendimiento (%) vs x",
+        xaxis_title="x (pl·m²)", yaxis_title="Pérdida (%)"
         )
         st.plotly_chart(fig2_best, use_container_width=True)
 
