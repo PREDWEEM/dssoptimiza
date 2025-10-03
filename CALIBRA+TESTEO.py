@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# Streamlit — Calibración/Testeo desde 2 Excels (sin columna dataset)
+# Streamlit — Calibración/Testeo con un único Excel (dataset marcado en hoja ensayos)
 
 import streamlit as st
 import pandas as pd
@@ -7,8 +7,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.optimize import minimize
 
-st.set_page_config(page_title="Calibración Hipérbolica (2 Excels)", layout="wide")
-st.title("📈 Calibración + Testeo desde 2 archivos Excel")
+st.set_page_config(page_title="Calibración Hipérbolica (Excel único)", layout="wide")
+st.title("📈 Calibración + Testeo desde un solo Excel")
 
 # ----------------------------
 # Parámetros fijos
@@ -30,8 +30,7 @@ def r2(y_true, y_pred):
 # ----------------------------
 def aplicar_tratamientos(sub, trat_df, ensayo):
     trats = trat_df[trat_df["ensayo_id"]==ensayo].dropna(subset=["tipo"])
-    if trats.empty:
-        return sub
+    if trats.empty: return sub
     for _, t in trats.iterrows():
         if pd.isna(t["fecha_aplicacion"]): continue
         f_ini = pd.to_datetime(t["fecha_aplicacion"])
@@ -66,45 +65,23 @@ def calcular_densidad(emer_df, trat_df, ensayo, Ca, Cs, pc_ini, pc_fin):
 # ----------------------------
 # App principal
 # ----------------------------
-st.sidebar.header("📂 Archivos de entrada")
-file_calib = st.sidebar.file_uploader("Archivo de CALIBRACIÓN (ej: calibra borde.xlsx)", type=["xlsx"])
-file_test  = st.sidebar.file_uploader("Archivo de TESTEO (ej: testeo.xlsx)", type=["xlsx"])
+file = st.file_uploader("📂 Subí un Excel con hojas ensayos, emergencia, tratamientos", type=["xlsx"])
 
-if file_calib and file_test:
-    # Leer calibración
-    ensayos_c = pd.read_excel(file_calib, sheet_name="ensayos")
-    emergencia_c = pd.read_excel(file_calib, sheet_name="emergencia")
-    tratamientos_c = pd.read_excel(file_calib, sheet_name="tratamientos")
-
-    # Leer testeo
-    ensayos_t = pd.read_excel(file_test, sheet_name="ensayos")
-    emergencia_t = pd.read_excel(file_test, sheet_name="emergencia")
-    tratamientos_t = pd.read_excel(file_test, sheet_name="tratamientos")
+if file:
+    ensayos = pd.read_excel(file, sheet_name="ensayos")
+    emergencia = pd.read_excel(file, sheet_name="emergencia")
+    tratamientos = pd.read_excel(file, sheet_name="tratamientos")
 
     resultados = []
-
-    # Procesar calibración
-    for _, row in ensayos_c.iterrows():
-        dens_eff = calcular_densidad(emergencia_c, tratamientos_c,
+    for _, row in ensayos.iterrows():
+        dens_eff = calcular_densidad(emergencia, tratamientos,
                                      row["ensayo_id"], row["Ca"], row["Cs"],
                                      row["pc_ini"], row["pc_fin"])
         resultados.append({
             "ensayo_id": row["ensayo_id"],
             "dens_eff": dens_eff,
             "loss_obs_pct": row["loss_obs_pct"],
-            "dataset": "calibración"
-        })
-
-    # Procesar testeo
-    for _, row in ensayos_t.iterrows():
-        dens_eff = calcular_densidad(emergencia_t, tratamientos_t,
-                                     row["ensayo_id"], row["Ca"], row["Cs"],
-                                     row["pc_ini"], row["pc_fin"])
-        resultados.append({
-            "ensayo_id": row["ensayo_id"],
-            "dens_eff": dens_eff,
-            "loss_obs_pct": row["loss_obs_pct"],
-            "dataset": "testeo"
+            "dataset": row["dataset"]  # <- ahora se lee directo del Excel
         })
 
     df = pd.DataFrame(resultados)
@@ -112,7 +89,7 @@ if file_calib and file_test:
     st.subheader("📊 Dataset generado")
     st.write(df)
 
-    # Optimización
+    # Optimización con calibración
     def objective(params):
         alpha, Lmax = params
         y_pred = loss_function(df[df["dataset"]=="calibración"]["dens_eff"].values, alpha, Lmax)
@@ -137,12 +114,14 @@ if file_calib and file_test:
     x_grid = np.linspace(0, max(df["dens_eff"])*1.2, 200)
     y_grid = loss_function(x_grid, alpha_opt, Lmax_opt)
     ax.plot(x_grid, y_grid, 'b-', label=f"Hiperbólica ajustada\nα={alpha_opt:.3f}, Lmax={Lmax_opt:.1f}")
-    ax.scatter(df[df["dataset"]=="calibración"]["dens_eff"],
-               df[df["dataset"]=="calibración"]["loss_obs_pct"],
-               c="green", marker="o", label="Calibración")
-    ax.scatter(df[df["dataset"]=="testeo"]["dens_eff"],
-               df[df["dataset"]=="testeo"]["loss_obs_pct"],
-               c="red", marker="s", label="Testeo")
+    if not df[df["dataset"]=="calibración"].empty:
+        ax.scatter(df[df["dataset"]=="calibración"]["dens_eff"],
+                   df[df["dataset"]=="calibración"]["loss_obs_pct"],
+                   c="green", marker="o", label="Calibración")
+    if not df[df["dataset"]=="testeo"].empty:
+        ax.scatter(df[df["dataset"]=="testeo"]["dens_eff"],
+                   df[df["dataset"]=="testeo"]["loss_obs_pct"],
+                   c="red", marker="s", label="Testeo")
     ax.set_xlabel("Densidad efectiva (x)")
     ax.set_ylabel("Pérdida de rinde (%)")
     ax.grid(True); ax.legend()
