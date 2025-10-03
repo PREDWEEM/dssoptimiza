@@ -1,46 +1,62 @@
 # -*- coding: utf-8 -*-
-# Validación y Testeo del modelo de pérdida de rinde
+# Streamlit — Calibración + Testeo con PRE/POST y estados S1–S4
+# Versión interactiva con carga de Excel
 
+import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+from io import BytesIO
 
 # -------------------
-# Parámetros calibrados
+# Parámetros calibrados y pesos fijos
 # -------------------
 ALPHA = 0.9782
 LMAX = 83.77
+W_ESTADOS = {"S1": 0.25, "S2": 0.5, "S3": 0.75, "S4": 1.0}
 
 # -------------------
-# Función de pérdida hiperbólica
+# Funciones auxiliares
 # -------------------
 def loss_pred(x, alpha=ALPHA, Lmax=LMAX):
     return Lmax * ((alpha * x) / (1 + alpha * x))
 
-# -------------------
-# Cargar datos
-# -------------------
-calibra_file = "calibra borde.xlsx"
-testeo_file = "testeo.xlsx"
+def rmse(y_true, y_pred):
+    return np.sqrt(np.mean((y_true - y_pred) ** 2))
 
-# Hojas
-ens_cal = pd.read_excel(calibra_file, sheet_name="ensayos")
-emer_cal = pd.read_excel(calibra_file, sheet_name="emergencia")
-trat_cal = pd.read_excel(calibra_file, sheet_name="tratamientos")
+def mae(y_true, y_pred):
+    return np.mean(np.abs(y_true - y_pred))
 
-ens_test = pd.read_excel(testeo_file, sheet_name="ensayos")
-emer_test = pd.read_excel(testeo_file, sheet_name="emergencia")
-trat_test = pd.read_excel(testeo_file, sheet_name="tratamientos")
+def r2(y_true, y_pred):
+    ss_res = np.sum((y_true - y_pred) ** 2)
+    ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
+    return 1 - ss_res / ss_tot
 
-# -------------------
-# Función para calcular densidad efectiva en PC
-# -------------------
-def compute_effective_density(ens_df, emer_df):
-    """
-    Simplificación: suma de emergencias relativas en el PC * Ca/Cs
-    (aquí podés insertar la lógica detallada de pesos S1-S4 y tratamientos)
-    """
+def eval_metrics(y_true, y_pred):
+    return {"RMSE": rmse(y_true, y_pred), "MAE": mae(y_true, y_pred), "R2": r2(y_true, y_pred)}
+
+def asignar_estado(dias):
+    if dias <= 6: return "S1"
+    elif dias <= 12: return "S2"
+    elif dias <= 18: return "S3"
+    else: return "S4"
+
+def aplicar_tratamientos(df_emer, df_trat, ensayo_id):
+    sub = df_trat[df_trat["ensayo_id"] == ensayo_id].dropna(subset=["tipo"])
+    if sub.empty:
+        return df_emer
+    df = df_emer.copy()
+    for _, t in sub.iterrows():
+        t_ini = pd.to_datetime(t["fecha_aplicacion"])
+        t_fin = t_ini + pd.to_timedelta(t.get("residual_dias", 0), unit="D")
+        eficacia = (1 - t["eficacia_pct"] / 100.0)
+        for s in ["S1","S2","S3","S4"]:
+            if t.get(f"actua_{s.lower()}",0) == 1:
+                mask = (df["estado"]==s) & (df["fecha"]>=t_ini) & (df["fecha"]<=t_fin)
+                df.loc[mask,"emer_rel"] *= eficacia
+    return df
+
+def compute_effective_density(ens_df, emer_df, trat_df):
     results = []
     for _, row in ens_df.iterrows():
         ensayo = row["ensayo_id"]
@@ -48,62 +64,90 @@ def compute_effective_density(ens_df, emer_df):
         pc_fin = pd.to_datetime(row["pc_fin"])
         Ca, Cs = row["Ca"], row["Cs"]
 
-        # Emergencias del ensayo en PC
         df_emer = emer_df[emer_df["ensayo_id"] == ensayo].copy()
+        if df_emer.empty:
+            results.append((ensayo, 0))
+            continue
+
         df_emer["fecha"] = pd.to_datetime(df_emer["fecha"])
-        df_emer = df_emer[(df_emer["fecha"] >= pc_ini) & (df_emer["fecha"] <= pc_fin)]
+        df_emer = df_emer[(df_emer["fecha"] >= pc_ini) & (df_emer["fecha"] <= pc_fin)].copy()
 
-        # Densidad efectiva: suma de emergencia relativa × capacidad competitiva
-        dens_eff = df_emer["emer_rel"].sum() * (Ca / Cs)
+        sow_date = pd.to_datetime(row["fecha_siembra"])
+        df_emer["dias_desde_siembra"] = (df_emer["fecha"] - sow_date).dt.days
+        df_emer["estado"] = df_emer["dias_desde_siembra"].apply(asignar_estado)
 
+        df_emer = aplicar_tratamientos(df_emer, trat_df, ensayo)
+
+        df_emer["peso_estado"] = df_emer["estado"].map(W_ESTADOS)
+        df_emer["emer_pond"] = df_emer["emer_rel"] * df_emer["peso_estado"]
+
+        dens_eff = df_emer["emer_pond"].sum() * (Ca / Cs)
         results.append((ensayo, dens_eff))
     return pd.DataFrame(results, columns=["ensayo_id", "dens_eff"])
 
-# -------------------
-# Calcular densidad efectiva
-# -------------------
-dens_cal = compute_effective_density(ens_cal, emer_cal)
-dens_test = compute_effective_density(ens_test, emer_test)
-
-# Merge con ensayos
-ens_cal = ens_cal.merge(dens_cal, on="ensayo_id")
-ens_test = ens_test.merge(dens_test, on="ensayo_id")
-
-# -------------------
-# Predicciones
-# -------------------
-ens_cal["loss_pred_pct"] = loss_pred(ens_cal["dens_eff"])
-ens_test["loss_pred_pct"] = loss_pred(ens_test["dens_eff"])
-
-# -------------------
-# Métricas
-# -------------------
-def eval_metrics(y_true, y_pred):
-    return {
-        "RMSE": mean_squared_error(y_true, y_pred, squared=False),
-        "MAE": mean_absolute_error(y_true, y_pred),
-        "R2": r2_score(y_true, y_pred)
-    }
-
-metrics_cal = eval_metrics(ens_cal["loss_obs_pct"], ens_cal["loss_pred_pct"])
-metrics_test = eval_metrics(ens_test["loss_obs_pct"], ens_test["loss_pred_pct"])
-
-print("Métricas CALIBRACIÓN:", metrics_cal)
-print("Métricas TESTEO:", metrics_test)
-
-# -------------------
-# Gráficos
-# -------------------
 def plot_obs_vs_pred(df, title):
-    plt.figure(figsize=(6,6))
-    plt.scatter(df["loss_obs_pct"], df["loss_pred_pct"], alpha=0.7)
-    plt.plot([0,100], [0,100], 'r--')
-    plt.xlabel("Pérdida observada (%)")
-    plt.ylabel("Pérdida predicha (%)")
-    plt.title(title)
-    plt.grid(True)
-    plt.show()
+    fig, ax = plt.subplots(figsize=(6,6))
+    ax.scatter(df["loss_obs_pct"], df["loss_pred_pct"], alpha=0.7)
+    ax.plot([0,100],[0,100],'r--')
+    ax.set_xlabel("Pérdida observada (%)")
+    ax.set_ylabel("Pérdida predicha (%)")
+    ax.set_title(title)
+    ax.grid(True)
+    st.pyplot(fig)
 
-plot_obs_vs_pred(ens_cal, "Calibración (Entrenamiento)")
-plot_obs_vs_pred(ens_test, "Testeo (Validación)")
+# -------------------
+# Interfaz Streamlit
+# -------------------
+st.set_page_config(page_title="Calibración + Testeo (S1–S4 + PRE/POST)", layout="wide")
+st.title("🌱 Calibración y Testeo de Pérdida de Rinde")
+st.write("Modelo con estados fijos (S1–S4), tratamientos PRE/POST con residualidad, y curva hiperbólica calibrada.")
+
+st.sidebar.header("📂 Subir archivos")
+calibra_file = st.sidebar.file_uploader("Archivo de calibración (.xlsx)", type="xlsx")
+testeo_file = st.sidebar.file_uploader("Archivo de testeo (.xlsx)", type="xlsx")
+
+if calibra_file and testeo_file:
+    ens_cal = pd.read_excel(calibra_file, sheet_name="ensayos")
+    emer_cal = pd.read_excel(calibra_file, sheet_name="emergencia")
+    trat_cal = pd.read_excel(calibra_file, sheet_name="tratamientos")
+
+    ens_test = pd.read_excel(testeo_file, sheet_name="ensayos")
+    emer_test = pd.read_excel(testeo_file, sheet_name="emergencia")
+    trat_test = pd.read_excel(testeo_file, sheet_name="tratamientos")
+
+    # Calcular densidad efectiva
+    dens_cal = compute_effective_density(ens_cal, emer_cal, trat_cal)
+    dens_test = compute_effective_density(ens_test, emer_test, trat_test)
+
+    ens_cal = ens_cal.merge(dens_cal, on="ensayo_id")
+    ens_test = ens_test.merge(dens_test, on="ensayo_id")
+
+    # Predicciones
+    ens_cal["loss_pred_pct"] = loss_pred(ens_cal["dens_eff"])
+    ens_test["loss_pred_pct"] = loss_pred(ens_test["dens_eff"])
+
+    # Métricas
+    metrics_cal = eval_metrics(ens_cal["loss_obs_pct"], ens_cal["loss_pred_pct"])
+    metrics_test = eval_metrics(ens_test["loss_obs_pct"], ens_test["loss_pred_pct"])
+
+    st.subheader("📊 Resultados")
+    st.write("**Métricas de Calibración:**", metrics_cal)
+    st.write("**Métricas de Testeo:**", metrics_test)
+
+    # Gráficos
+    col1, col2 = st.columns(2)
+    with col1: plot_obs_vs_pred(ens_cal, "Calibración (Entrenamiento)")
+    with col2: plot_obs_vs_pred(ens_test, "Testeo (Validación)")
+
+    # Descarga
+    st.subheader("⬇️ Descargar resultados")
+    out = pd.concat([ens_cal.assign(dataset="calibración"), ens_test.assign(dataset="testeo")])
+    buffer = BytesIO()
+    out.to_csv(buffer, index=False)
+    st.download_button("Descargar CSV", data=buffer.getvalue(),
+                       file_name="resultados_calibra_testeo.csv",
+                       mime="text/csv")
+else:
+    st.info("Subí ambos archivos Excel (calibración y testeo) desde la barra lateral.")
+
 
