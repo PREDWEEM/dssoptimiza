@@ -29,8 +29,8 @@ def calcular_densidad_ensayo(row, emer_df, trat_df, W_ESTADOS, infestacion_escen
     pc_ini = pd.to_datetime(row["pc_ini"])
     pc_fin = pd.to_datetime(row["pc_fin"])
     fecha_siembra = pd.to_datetime(row["fecha_siembra"])
-    IC = row.get("MAX_PLANTS_CAP", infestacion_escenario)
 
+    # Subconjunto de emergencia del ensayo
     emer_sub = emer_df[emer_df["ensayo_id"] == ensayo_id].copy()
     if emer_sub.empty:
         return np.nan
@@ -39,18 +39,26 @@ def calcular_densidad_ensayo(row, emer_df, trat_df, W_ESTADOS, infestacion_escen
     emer_sub = emer_sub.sort_values("fecha")
     emer_sub["emer_rel"] = emer_sub["emer_rel"].astype(float)
 
+    # Inicializar AUC por estados
     auc_estados = {k: 0.0 for k in W_ESTADOS.keys()}
 
+    # Asignar emergencias a estados según edad desde siembra
     for _, r in emer_sub.iterrows():
         edad = (r["fecha"] - fecha_siembra).days
-        if 1 <= edad <= 6: estado = "s1"
-        elif 7 <= edad <= 15: estado = "s2"
-        elif 16 <= edad <= 25: estado = "s3"
-        else: estado = "s4"
+        if 1 <= edad <= 6:
+            estado = "s1"
+        elif 7 <= edad <= 15:
+            estado = "s2"
+        elif 16 <= edad <= 25:
+            estado = "s3"
+        else:
+            estado = "s4"
 
+        # Solo acumular si está dentro del período crítico
         if pc_ini <= r["fecha"] <= pc_fin:
             auc_estados[estado] += r["emer_rel"]
 
+    # Aplicar tratamientos (eficacia y residualidad simplificada)
     trat_sub = trat_df[trat_df["ensayo_id"] == ensayo_id].copy()
     if not trat_sub.empty:
         for _, t in trat_sub.iterrows():
@@ -60,9 +68,14 @@ def calcular_densidad_ensayo(row, emer_df, trat_df, W_ESTADOS, infestacion_escen
                     if t.get(f"actua_{est}", 0) == 1:
                         auc_estados[est] *= (1 - ef)
 
+    # Calcular densidad efectiva (fracción ponderada × escenario)
     dens_frac = sum(auc_estados[est] * W_ESTADOS[est] for est in W_ESTADOS.keys())
-    dens_eff = dens_frac * IC
+    dens_eff = dens_frac * infestacion_escenario   # en plantas/m²
+
     return dens_eff
+
+
+
 
 # =====================
 # Streamlit app
