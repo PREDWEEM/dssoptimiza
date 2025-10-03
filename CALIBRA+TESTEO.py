@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 # Streamlit — Optimización de α y Lmax con datos de calibración/testeo
-# Lee un CSV con columnas: ensayo_id, dens_eff, loss_obs_pct, dataset
-# Ajusta función hiperbólica, calcula métricas y genera gráficos.
+# Compatible con CSV y Excel (XLSX)
 
 import streamlit as st
 import pandas as pd
@@ -14,22 +13,35 @@ st.set_page_config(page_title="Calibración Hipérbolica", layout="centered")
 st.title("📈 Calibración de curva de pérdida (α y Lmax)")
 
 # ==========================
-# 1. Subir CSV
+# 1. Subir archivo (CSV o Excel)
 # ==========================
-file = st.file_uploader("📂 Subí el archivo resultados_calibra_testeo.csv", type=["csv"])
+file = st.file_uploader("📂 Subí el archivo resultados_calibra_testeo (.csv o .xlsx)", 
+                        type=["csv", "xlsx"])
 
 if file is not None:
-    df = pd.read_csv(file)
+    # Detectar tipo de archivo
+    if file.name.endswith(".csv"):
+        df = pd.read_csv(file)
+    else:
+        # Si tiene varias hojas, dejar elegir
+        xls = pd.ExcelFile(file)
+        hoja = st.selectbox("📑 Elegí la hoja de Excel", xls.sheet_names)
+        df = pd.read_excel(file, sheet_name=hoja)
+
+    # ==========================
+    # 2. Verificación de columnas
+    # ==========================
+    st.write("✅ Columnas detectadas:", df.columns.tolist())
 
     if not {"dens_eff","loss_obs_pct","dataset"}.issubset(df.columns):
-        st.error("⚠️ El archivo no contiene las columnas requeridas: dens_eff, loss_obs_pct, dataset")
+        st.error("⚠️ El archivo debe contener al menos estas columnas: dens_eff, loss_obs_pct, dataset")
         st.stop()
 
     calib = df[df["dataset"]=="calibración"]
     test = df[df["dataset"]=="testeo"]
 
     # ==========================
-    # 2. Función hiperbólica y métricas
+    # 3. Función hiperbólica y métricas
     # ==========================
     def loss_function(x, alpha, Lmax):
         return (alpha * Lmax * x) / (alpha + x)
@@ -46,7 +58,7 @@ if file is not None:
         return 1 - ss_res/ss_tot
 
     # ==========================
-    # 3. Optimización de α y Lmax (solo calibración)
+    # 4. Optimización de α y Lmax
     # ==========================
     def objective(params):
         alpha, Lmax = params
@@ -62,7 +74,7 @@ if file is not None:
     st.success(f"✅ Parámetros optimizados: α = {alpha_opt:.4f} · Lmax = {Lmax_opt:.2f}")
 
     # ==========================
-    # 4. Evaluación
+    # 5. Evaluación
     # ==========================
     st.subheader("📊 Métricas de desempeño")
 
@@ -81,7 +93,7 @@ if file is not None:
     st.write(pd.DataFrame(metrics).T.round(2))
 
     # ==========================
-    # 5. Gráfico
+    # 6. Gráfico
     # ==========================
     st.subheader("📉 Curva ajustada vs datos observados")
 
@@ -102,8 +114,9 @@ if file is not None:
     st.pyplot(fig)
 
     # ==========================
-    # 6. Exportar resultados
+    # 7. Exportar resultados
     # ==========================
     df["loss_pred_opt"] = loss_function(df["dens_eff"].values, alpha_opt, Lmax_opt)
     csv_out = df.to_csv(index=False).encode("utf-8")
-    st.download_button("⬇️ Descargar resultados optimizados (CSV)", csv_out, "resultados_optimizados.csv", "text/csv")
+    st.download_button("⬇️ Descargar resultados optimizados (CSV)", csv_out, 
+                       "resultados_optimizados.csv", "text/csv")
