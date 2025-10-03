@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # Streamlit — Calibración + Testeo con PRE/POST y estados S1–S4
-# Versión interactiva con carga de Excel
+# Versión robusta: normaliza nombres de columnas
 
 import streamlit as st
 import pandas as pd
@@ -13,11 +13,16 @@ from io import BytesIO
 # -------------------
 ALPHA = 0.9782
 LMAX = 83.77
-W_ESTADOS = {"S1": 0.25, "S2": 0.5, "S3": 0.75, "S4": 1.0}
+W_ESTADOS = {"s1": 0.25, "s2": 0.5, "s3": 0.75, "s4": 1.0}
 
 # -------------------
 # Funciones auxiliares
 # -------------------
+def normalize_columns(df):
+    """Pone todas las columnas en minúsculas y sin espacios"""
+    df.columns = df.columns.str.strip().str.lower()
+    return df
+
 def loss_pred(x, alpha=ALPHA, Lmax=LMAX):
     return Lmax * ((alpha * x) / (1 + alpha * x))
 
@@ -36,10 +41,10 @@ def eval_metrics(y_true, y_pred):
     return {"RMSE": rmse(y_true, y_pred), "MAE": mae(y_true, y_pred), "R2": r2(y_true, y_pred)}
 
 def asignar_estado(dias):
-    if dias <= 6: return "S1"
-    elif dias <= 12: return "S2"
-    elif dias <= 18: return "S3"
-    else: return "S4"
+    if dias <= 6: return "s1"
+    elif dias <= 12: return "s2"
+    elif dias <= 18: return "s3"
+    else: return "s4"
 
 def aplicar_tratamientos(df_emer, df_trat, ensayo_id):
     sub = df_trat[df_trat["ensayo_id"] == ensayo_id].dropna(subset=["tipo"])
@@ -47,11 +52,13 @@ def aplicar_tratamientos(df_emer, df_trat, ensayo_id):
         return df_emer
     df = df_emer.copy()
     for _, t in sub.iterrows():
+        if pd.isna(t["fecha_aplicacion"]): 
+            continue
         t_ini = pd.to_datetime(t["fecha_aplicacion"])
         t_fin = t_ini + pd.to_timedelta(t.get("residual_dias", 0), unit="D")
         eficacia = (1 - t["eficacia_pct"] / 100.0)
-        for s in ["S1","S2","S3","S4"]:
-            if t.get(f"actua_{s.lower()}",0) == 1:
+        for s in ["s1","s2","s3","s4"]:
+            if t.get(f"actua_{s}",0) == 1:
                 mask = (df["estado"]==s) & (df["fecha"]>=t_ini) & (df["fecha"]<=t_fin)
                 df.loc[mask,"emer_rel"] *= eficacia
     return df
@@ -62,7 +69,7 @@ def compute_effective_density(ens_df, emer_df, trat_df):
         ensayo = row["ensayo_id"]
         pc_ini = pd.to_datetime(row["pc_ini"])
         pc_fin = pd.to_datetime(row["pc_fin"])
-        Ca, Cs = row["Ca"], row["Cs"]
+        Ca, Cs = row["ca"], row["cs"]
 
         df_emer = emer_df[emer_df["ensayo_id"] == ensayo].copy()
         if df_emer.empty:
@@ -107,13 +114,16 @@ calibra_file = st.sidebar.file_uploader("Archivo de calibración (.xlsx)", type=
 testeo_file = st.sidebar.file_uploader("Archivo de testeo (.xlsx)", type="xlsx")
 
 if calibra_file and testeo_file:
-    ens_cal = pd.read_excel(calibra_file, sheet_name="ensayos")
-    emer_cal = pd.read_excel(calibra_file, sheet_name="emergencia")
-    trat_cal = pd.read_excel(calibra_file, sheet_name="tratamientos")
+    ens_cal = normalize_columns(pd.read_excel(calibra_file, sheet_name="ensayos"))
+    emer_cal = normalize_columns(pd.read_excel(calibra_file, sheet_name="emergencia"))
+    trat_cal = normalize_columns(pd.read_excel(calibra_file, sheet_name="tratamientos"))
 
-    ens_test = pd.read_excel(testeo_file, sheet_name="ensayos")
-    emer_test = pd.read_excel(testeo_file, sheet_name="emergencia")
-    trat_test = pd.read_excel(testeo_file, sheet_name="tratamientos")
+    ens_test = normalize_columns(pd.read_excel(testeo_file, sheet_name="ensayos"))
+    emer_test = normalize_columns(pd.read_excel(testeo_file, sheet_name="emergencia"))
+    trat_test = normalize_columns(pd.read_excel(testeo_file, sheet_name="tratamientos"))
+
+    # Depuración rápida
+    st.write("📑 Columnas en emergencia (test):", emer_test.columns.tolist())
 
     # Calcular densidad efectiva
     dens_cal = compute_effective_density(ens_cal, emer_cal, trat_cal)
