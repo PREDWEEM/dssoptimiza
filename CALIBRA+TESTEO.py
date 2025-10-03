@@ -30,10 +30,33 @@ def loss_function(x, alpha, Lmax):
 # Cálculo densidad efectiva
 # =========================
 def calcular_densidad_ensayo(row, emer_df, trat_df, W_ESTADOS, infestacion_escenario=250):
+    """
+    Calcula densidad efectiva de malezas en plantas/m² para un ensayo.
+
+    Parámetros
+    ----------
+    row : pandas.Series
+        Fila de la hoja 'ensayos' (contiene ensayo_id, pc_ini, pc_fin, etc.).
+    emer_df : pandas.DataFrame
+        Hoja 'emergencia' (ensayo_id, fecha, emer_rel).
+    trat_df : pandas.DataFrame
+        Hoja 'tratamientos' (ensayo_id, tipo, fecha_aplicacion, eficacia_pct, residual_dias, actua_s1...).
+    W_ESTADOS : dict
+        Pesos fijos para S1–S4. Ej: {"s1":0.25, "s2":0.5, "s3":0.75, "s4":1.0}
+    infestacion_escenario : int
+        Nivel de infestación máximo del escenario (ej: 250, 125 o 50 plantas/m²).
+
+    Retorna
+    -------
+    dens_eff : float
+        Densidad efectiva en plantas/m² durante el PC.
+    """
+
     ensayo_id = row["ensayo_id"]
     pc_ini = pd.to_datetime(row["pc_ini"])
     pc_fin = pd.to_datetime(row["pc_fin"])
 
+    # Filtrar emergencias de ese ensayo
     emer_sub = emer_df[emer_df["ensayo_id"] == ensayo_id].copy()
     if emer_sub.empty:
         return np.nan
@@ -41,13 +64,14 @@ def calcular_densidad_ensayo(row, emer_df, trat_df, W_ESTADOS, infestacion_escen
     emer_sub["fecha"] = pd.to_datetime(emer_sub["fecha"])
     emer_sub = emer_sub.sort_values("fecha")
 
-    # Normalizar emergencia relativa
-    emer_sub["emer_rel"] = emer_sub["emer_rel"] / emer_sub["emer_rel"].sum()
+    # ⚠️ NO normalizar a 1 — usar la emergencia tal cual está cargada
+    emer_sub["emer_rel"] = emer_sub["emer_rel"].astype(float)
 
+    # Inicializar acumuladores por estado
     auc_estados = {k: 0.0 for k in W_ESTADOS.keys()}
     fecha_siembra = pd.to_datetime(row["fecha_siembra"])
 
-    # Clasificación por estados
+    # Clasificación en estados (S1–S4)
     for _, r in emer_sub.iterrows():
         edad = (r["fecha"] - fecha_siembra).days
         if 1 <= edad <= 6:
@@ -59,10 +83,11 @@ def calcular_densidad_ensayo(row, emer_df, trat_df, W_ESTADOS, infestacion_escen
         else:
             estado = "s4"
 
+        # Solo acumular si está dentro del periodo crítico
         if pc_ini <= r["fecha"] <= pc_fin:
             auc_estados[estado] += r["emer_rel"]
 
-    # Tratamientos
+    # Aplicar tratamientos (eficacia/residualidad por estado)
     trat_sub = trat_df[trat_df["ensayo_id"] == ensayo_id].copy()
     if not trat_sub.empty:
         for _, t in trat_sub.iterrows():
@@ -73,12 +98,14 @@ def calcular_densidad_ensayo(row, emer_df, trat_df, W_ESTADOS, infestacion_escen
                 if t.get(f"actua_{est}", 0) == 1:
                     auc_estados[est] *= (1 - ef)
 
+    # Calcular densidad efectiva (plantas/m²)
     dens_eff = 0.0
     for est, peso in W_ESTADOS.items():
         dens_eff += auc_estados[est] * peso
 
-    # Escalar a plantas/m²
+    # Escalar al escenario → ahora dens_eff está en plantas/m²
     dens_eff = dens_eff * infestacion_escenario
+
     return dens_eff
 
 # =========================
