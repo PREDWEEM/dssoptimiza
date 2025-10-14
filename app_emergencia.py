@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
-# PREDWEEM — Supresión (1−Ciec) + Control (AUC) + Cohortes · Optimización
+# ===============================================================
+# PREDWEEM — Supresión (1−Ciec) + Control (AUC) + Cohortes SECUENCIALES · Optimización
+# ===============================================================
 # Reglas pedidas:
-# - Presiembra selectivo residual: SOLO <= siembra−14 días (no puede caer en [siembra−13, siembra])
-# - Preemergente selectivo residual: [siembra, siembra+10]
-# - Ambos (presiembraR y preemR) actúan SOLO sobre S1 y S2
-# - Post-residual: >= siembra+20 (sin cambios)
-# - Graminicida post: ventana día 0 +10 (sin cambios)
+# - Presiembra selectivo residual: SOLO ≤ siembra−14 días (no puede caer en [siembra−13, siembra]) · Actúa S1–S2
+# - Preemergente selectivo residual: [siembra, siembra+10] · Actúa S1–S2
+# - Post-residual: ≥ siembra+20 · Actúa S1–S4
+# - Graminicida post: ventana día 0 .. +10 · Actúa S1–S3
+# ===============================================================
 
 import io, re, json, math, datetime as dt
 import numpy as np
@@ -21,8 +23,8 @@ import itertools, random, math as _math
 def _loss(x):
     """
     Función de pérdida (% pérdida de rinde en función de la densidad efectiva).
-    Acepta escalares o arrays (NumPy).
-    Fórmula base: 0.375 * x / (1 + (0.375 * x / 76.639))
+    Fórmula base calibrada: 0.375 * x / (1 + (0.375 * x / 76.639))
+    Acepta escalares o arrays.
     """
     x = np.asarray(x, dtype=float)
     return 0.375 * x / (1.0 + (0.375 * x / 76.639))
@@ -31,7 +33,7 @@ def _loss(x):
 if "opt_running" not in st.session_state: st.session_state.opt_running = False
 if "opt_stop" not in st.session_state:    st.session_state.opt_stop = False
 
-APP_TITLE = "PREDWEEM · Supresión (1−Ciec) + Control (AUC) + Cohortes · Optimización"
+APP_TITLE = "PREDWEEM · Supresión (1−Ciec) + Control (AUC) + Cohortes SECUENCIALES · Optimización"
 st.set_page_config(page_title=APP_TITLE, layout="wide", initial_sidebar_state="expanded")
 st.title(APP_TITLE)
 
@@ -48,8 +50,9 @@ def sniff_sep_dec(text: str):
     sample = text[:8000]
     counts = {sep: sample.count(sep) for sep in [",", ";", "\t"]}
     sep_guess = max(counts, key=counts.get) if counts else ","
-    dec_guess = "."
-    if sample.count(",") > sample.count(".") and re.search(r",\d", sample): dec_guess = ","
+    dec_guess = "." if sample.count(".") >= sample.count(",") else ","
+    if sample.count(",") > sample.count(".") and re.search(r",\d", sample):
+        dec_guess = ","
     return sep_guess, dec_guess
 
 @st.cache_data(show_spinner=False)
@@ -62,12 +65,12 @@ def read_raw(up, url):
     if url: return read_raw_from_url(url)
     raise ValueError("No hay fuente de datos.")
 
-def parse_csv(raw, sep_opt, dec_opt, encoding="utf-8", on_bad="warn"):
+def parse_csv(raw, sep_opt, dec_opt, encoding="utf-8"):
     head = raw[:8000].decode("utf-8", errors="ignore")
     sep_guess, dec_guess = sniff_sep_dec(head)
     sep = sep_guess if sep_opt == "auto" else ("," if sep_opt=="," else (";" if sep_opt==";" else "\t"))
     dec = dec_guess if dec_opt == "auto" else dec_opt
-    df = pd.read_csv(io.BytesIO(raw), sep=sep, decimal=dec, engine="python", on_bad_lines=on_bad)
+    df = pd.read_csv(io.BytesIO(raw), sep=sep, decimal=dec, engine="python")
     return df, {"sep": sep, "dec": dec, "enc": encoding}
 
 def clean_numeric_series(s: pd.Series, decimal="."):
@@ -113,7 +116,7 @@ with st.sidebar:
     ))
 st.caption(
     f"AUC(EMERREL cruda) ≙ tope A2 **= {int(MAX_PLANTS_CAP)} pl·m²**. "
-    "Cohortes S1..S4 (edad desde emergencia). Salidas en pl·m²·sem⁻¹ con cap."
+    "Cohortes S1..S4 SECUENCIALES (edad desde emergencia)."
 )
 
 # ================== Carga CSV ==================
@@ -175,6 +178,7 @@ with st.expander("Seleccionar columnas y depurar datos", expanded=True):
     if is_cumulative: emerrel = emerrel.diff().fillna(0.0).clip(lower=0.0)
     emerrel = emerrel.clip(lower=0.0)
     df_plot = pd.DataFrame({"fecha": pd.to_datetime(df["fecha"]), "EMERREL": emerrel})
+
 # ============= Siembra & Canopia =============
 years = df_plot["fecha"].dt.year.dropna().astype(int)
 year_ref = int(years.mode().iloc[0]) if len(years) else dt.date.today().year
@@ -234,7 +238,7 @@ else:
 df_ciec = pd.DataFrame({"fecha": df_plot["fecha"], "Ciec": Ciec})
 one_minus_Ciec = np.clip((1.0 - Ciec).astype(float), 0.0, 1.0)
 
-# ============= Cohortes S1..S4 =============
+# ============= Cohortes S1..S4 (SECUENCIALES) =============
 ts = pd.to_datetime(df_plot["fecha"])
 mask_since_sow = (ts.dt.date >= sow_date)
 
@@ -245,10 +249,20 @@ births_series = pd.Series(births, index=ts)
 def roll_sum_shift(s: pd.Series, win: int, shift_days: int) -> pd.Series:
     return s.rolling(window=win, min_periods=0).sum().shift(shift_days)
 
-S1_coh = roll_sum_shift(births_series, 6, 1).fillna(0.0)
-S2_coh = roll_sum_shift(births_series, 21, 7).fillna(0.0)
-S3_coh = roll_sum_shift(births_series, 32, 28).fillna(0.0)
-S4_coh = births_series.cumsum().shift(60).fillna(0.0)
+# Base sin restricciones
+S1_raw = roll_sum_shift(births_series, 6, 1).fillna(0.0)
+S2_raw = roll_sum_shift(births_series, 21, 7).fillna(0.0)
+S3_raw = roll_sum_shift(births_series, 32, 28).fillna(0.0)
+S4_raw = births_series.cumsum().shift(60).fillna(0.0)
+
+# Secuencialidad S1→S2→S3→S4
+S1_coh = S1_raw.clip(lower=0.0)
+S2_cap = np.minimum(S2_raw.clip(lower=0.0), S1_coh.cumsum())
+S2_coh = (S2_cap - S1_coh).clip(lower=0.0)
+S3_cap = np.minimum(S3_raw.clip(lower=0.0), (S1_coh + S2_coh).cumsum())
+S3_coh = (S3_cap - (S1_coh + S2_coh)).clip(lower=0.0)
+S4_cap = np.minimum(S4_raw.clip(lower=0.0), (S1_coh + S2_coh + S3_coh).cumsum())
+S4_coh = (S4_cap - (S1_coh + S2_coh + S3_coh)).clip(lower=0.0)
 
 FC_S = {"S1": 0.0, "S2": 0.3, "S3": 0.6, "S4": 1.0}  # coef. de sombreamiento relativo
 
@@ -286,7 +300,7 @@ with st.sidebar:
     pre_selNR = st.checkbox("Selectivo no residual (pre)", value=False)
     pre_selNR_date = st.date_input("Fecha selectivo no residual (pre)", value=min_date, min_value=min_date, max_value=max_date, disabled=not pre_selNR)
 
-    # selectivo + residual PRE-SIEMBRA (SOLO <= siembra-14)
+    # selectivo + residual PRE-SIEMBRA (SOLO ≤ siembra−14)
     preR = st.checkbox("Selectivo + residual (presiembra)", value=False,
                        help="Solo permitido hasta siembra−14 días (no puede caer entre −13 y 0).")
     preR_days = st.slider("Residualidad presiembra (días)", 15, 120, 45, 1, disabled=not preR)
@@ -407,11 +421,13 @@ def weights_residual(start_date, dias):
 
 # ===== Aportes por estado (pl·m²·día⁻¹) =====
 if factor_area_to_plants is not None:
+    ms = mask_since_sow.to_numpy()
+
     S1_pl = S1_arr * one_minus_Ciec * FC_S["S1"] * factor_area_to_plants
     S2_pl = S2_arr * one_minus_Ciec * FC_S["S2"] * factor_area_to_plants
     S3_pl = S3_arr * one_minus_Ciec * FC_S["S3"] * factor_area_to_plants
     S4_pl = S4_arr * one_minus_Ciec * FC_S["S4"] * factor_area_to_plants
-    ms = mask_since_sow.to_numpy()
+
     S1_pl = np.where(ms, S1_pl, 0.0); S2_pl = np.where(ms, S2_pl, 0.0)
     S3_pl = np.where(ms, S3_pl, 0.0); S4_pl = np.where(ms, S4_pl, 0.0)
 
@@ -500,12 +516,11 @@ else:
     A2_sup_final = A2_ctrl_final = float("nan")
 
 # ===== pérdidas vs x =====
-def perdida_rinde_pct(x): x = np.asarray(x, float); return 0.375 * x / (1.0 + (0.375 * x / 76.639))
 if factor_area_to_plants is not None:
     X2 = float(np.nansum(plantas_supresion_cap[mask_since_sow]))
     X3 = float(np.nansum(plantas_supresion_ctrl_cap[mask_since_sow]))
-    loss_x2_pct = float(perdida_rinde_pct(X2)) if np.isfinite(X2) else float("nan")
-    loss_x3_pct = float(perdida_rinde_pct(X3)) if np.isfinite(X3) else float("nan")
+    loss_x2_pct = float(_loss(X2)) if np.isfinite(X2) else float("nan")
+    loss_x3_pct = float(_loss(X3)) if np.isfinite(X3) else float("nan")
 else:
     X2 = X3 = float("nan"); loss_x2_pct = loss_x3_pct = float("nan")
 
@@ -630,10 +645,21 @@ def recompute_for_sow(sow_d: dt.date):
 
     births = np.where(mask_since.to_numpy(), emerrel_all, 0.0)
     s = pd.Series(births, index=ts_all)
-    S1 = s.rolling(6, min_periods=0).sum().shift(1).fillna(0.0).reindex(ts_all).to_numpy(float)
-    S2 = s.rolling(21, min_periods=0).sum().shift(7).fillna(0.0).reindex(ts_all).to_numpy(float)
-    S3 = s.rolling(32, min_periods=0).sum().shift(28).fillna(0.0).reindex(ts_all).to_numpy(float)
-    S4 = s.cumsum().shift(60).fillna(0.0).reindex(ts_all).to_numpy(float)
+
+    # ——— Cohortes SECUENCIALES dentro del optimizador ———
+    def roll_sum_shift_local(s, win, shift): return s.rolling(win, min_periods=0).sum().shift(shift)
+    S1_raw = roll_sum_shift_local(s,6,1).fillna(0.0)
+    S2_raw = roll_sum_shift_local(s,21,7).fillna(0.0)
+    S3_raw = roll_sum_shift_local(s,32,28).fillna(0.0)
+    S4_raw = s.cumsum().shift(60).fillna(0.0)
+
+    S1 = S1_raw.clip(lower=0.0)
+    S2_cap = np.minimum(S2_raw.clip(lower=0.0), S1.cumsum())
+    S2 = (S2_cap - S1).clip(lower=0.0)
+    S3_cap = np.minimum(S3_raw.clip(lower=0.0), (S1 + S2).cumsum())
+    S3 = (S3_cap - (S1 + S2)).clip(lower=0.0)
+    S4_cap = np.minimum(S4_raw.clip(lower=0.0), (S1 + S2 + S3).cumsum())
+    S4 = (S4_cap - (S1 + S2 + S3)).clip(lower=0.0)
 
     auc_cruda_loc = auc_time(ts_all, emerrel_all, mask=mask_since)
     if auc_cruda_loc <= 0: return None
@@ -703,7 +729,6 @@ def evaluate(sd: dt.date, schedule: list):
     tot_ctrl = S1_pl*c1 + S2_pl*c2 + S3_pl*c3 + S4_pl*c4
     plantas_ctrl_cap = np.minimum(tot_ctrl, sup_cap)
 
-    def _loss(x): x=float(x); return 0.375 * x / (1.0 + (0.375 * x / 76.639))
     X2loc = float(np.nansum(sup_cap[mask_since])); X3loc = float(np.nansum(plantas_ctrl_cap[mask_since]))
     loss3 = _loss(X3loc)
 
@@ -726,7 +751,6 @@ def daterange(start_date, end_date, step_days):
 
 sow_candidates = daterange(sow_search_from, sow_search_to, sow_step_days)
 def pre_sow_dates(sd):
-    # desde (sd - preR_min_back) hasta (sd - 14), inclusive
     start = pd.to_datetime(sd) - pd.Timedelta(days=int(preR_min_back))
     end   = pd.to_datetime(sd) - pd.Timedelta(days=PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW)
     if end < start: return []
@@ -737,7 +761,6 @@ def pre_sow_dates(sd):
     return out
 
 def preem_dates(sd):
-    # siembra..siembra+10
     start = pd.to_datetime(sd)
     end   = pd.to_datetime(sd) + pd.Timedelta(days=PREEM_R_MAX_AFTER_SOW_DAYS)
     cur, out = start, []
@@ -1038,7 +1061,7 @@ if results:
             pd.DataFrame({"fecha": ts_b, "S1": S1c, "S2": S2c, "S3": S3c, "S4": S4c})
             .set_index("fecha").resample("W-MON").sum().reset_index()
         )
-        st.subheader("Figura 4 — Dinámica temporal de S1–S4")
+        st.subheader("Figura 4 — Dinámica temporal de S1–S4 (con control + cap)")
         fig_states = go.Figure()
         for col in ["S1","S2","S3","S4"]:
             fig_states.add_trace(go.Scatter(x=df_states_week_b["fecha"], y=df_states_week_b[col],
@@ -1051,6 +1074,4 @@ if results:
 
 else:
     st.info("Aún no hay resultados de optimización para mostrar.")
-
-
 
