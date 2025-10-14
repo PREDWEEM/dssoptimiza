@@ -488,6 +488,65 @@ if factor_area_to_plants is None:
     st.info("Subí datos con AUC>0 desde siembra para simular/optimizar.")
     st.stop()
 
+# ========================= TRATAMIENTOS → PESOS DIARIOS =========================
+# Cada tratamiento genera un vector temporal (ventana de acción) con valor 0–1 por día.
+
+# Ventanas (ya corregidas para comparar datetime.date)
+w_glifo   = weights_one_day(pre_glifo_date) if pre_glifo else np.zeros_like(fechas_d, float)
+w_preNR   = weights_residual(pre_selNR_date, NR_DAYS_DEFAULT) if pre_selNR else np.zeros_like(fechas_d, float)
+w_preR    = weights_residual(preR_date, preR_days) if preR else np.zeros_like(fechas_d, float)
+w_preemR  = weights_residual(preemR_date, preemR_days) if preemR else np.zeros_like(fechas_d, float)
+w_postG   = weights_residual(post_gram_date, POST_GRAM_FORWARD_DAYS) if post_gram else np.zeros_like(fechas_d, float)
+w_postR   = weights_residual(post_selR_date, post_res_dias) if post_selR else np.zeros_like(fechas_d, float)
+
+
+# ========================= FUNCIÓN DE COMBINACIÓN =========================
+def combine_kill(*terms):
+    """
+    Combina efectos de mortalidad independientes:
+    producto de (1 − eficiencia×peso) → 1 − producto acumulado.
+    Ejemplo: combine_kill(0.8*w1, 0.6*w2) = 1 - (1−0.8w1)*(1−0.6w2)
+    """
+    if not terms:
+        return np.zeros_like(fechas_d, float)
+    base = np.ones_like(fechas_d, float)
+    for t in terms:
+        base *= (1.0 - np.clip(t, 0.0, 1.0))
+    return np.clip(1.0 - base, 0.0, 1.0)
+
+
+# ========================= EFICIENCIA COMBINADA POR ESTADO =========================
+# k₁..k₄ representan el kill diario total (0–1) en cada estado fenológico.
+
+k1 = combine_kill(
+    (ef_pre_glifo/100)*w_glifo,
+    (ef_pre_selNR/100)*w_preNR,
+    (ef_preR/100)*w_preR,
+    (ef_preemR/100)*w_preemR,
+    (ef_post_gram/100)*w_postG,
+    (ef_post_selR/100)*w_postR
+)
+
+k2 = combine_kill(
+    (ef_pre_glifo/100)*w_glifo,
+    (ef_pre_selNR/100)*w_preNR,
+    (ef_preR/100)*w_preR,
+    (ef_preemR/100)*w_preemR,
+    (ef_post_selR/100)*w_postR
+)
+
+k3 = combine_kill(
+    (ef_pre_glifo/100)*w_glifo,
+    (ef_pre_selNR/100)*w_preNR,
+    (ef_post_gram/100)*w_postG,
+    (ef_post_selR/100)*w_postR
+)
+
+k4 = combine_kill(
+    (ef_pre_glifo/100)*w_glifo,
+    (ef_pre_selNR/100)*w_preNR,
+    (ef_post_selR/100)*w_postR
+)
 sim = simulate_chained(
     emerrel_series=df_plot.set_index("fecha")["EMERREL"],
     one_minus_ciec=one_minus_Ciec,
