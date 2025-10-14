@@ -557,6 +557,61 @@ with st.expander("Parámetros calibrados (solo lectura)", expanded=False):
 - **loss(x) = α·x / (1 + α·x/Lmax)**
 """
     )
+
+# ================== FUNCIÓN DE SIMULACIÓN (encadenada simplificada) ==================
+def simulate_chained(
+    emerrel_series,
+    one_minus_ciec,
+    sow_date,
+    k1, k2, k3, k4,
+    T1=6, T2=21, T3=32,
+    factor_area_to_plants=None
+):
+    """
+    Versión compacta para uso en optimización.
+    Replica la dinámica encadenada del modelo principal (S1→S4 bloqueante).
+    """
+    ts_local = pd.to_datetime(emerrel_series.index)
+    dates_d = np.array([d.date() for d in ts_local])
+    mask = (dates_d >= sow_date)
+    births = emerrel_series.to_numpy(float)
+    births = np.where(mask, births * one_minus_ciec, 0.0)
+
+    # Densidad efectiva base (sin control)
+    if factor_area_to_plants is not None:
+        base_pl = births * factor_area_to_plants
+    else:
+        base_pl = births
+
+    # Simulación encadenada
+    n = len(base_pl)
+    S1 = np.zeros(n); S2 = np.zeros(n); S3 = np.zeros(n); S4 = np.zeros(n)
+    for t in range(n):
+        inflow = base_pl[t]
+        if t == 0:
+            s1p = s2p = s3p = s4p = 0.0
+        else:
+            s1p, s2p, s3p, s4p = S1[t-1], S2[t-1], S3[t-1], S4[t-1]
+            s1p *= (1.0 - k1[t-1])
+            s2p *= (1.0 - k2[t-1])
+            s3p *= (1.0 - k3[t-1])
+            s4p *= (1.0 - k4[t-1])
+        s1p += inflow
+        s1p *= (1.0 - k1[t])
+        q12 = s1p / max(1, T1)
+        s1p -= q12
+        s2p += q12; s2p *= (1.0 - k2[t])
+        q23 = s2p / max(1, T2)
+        s2p -= q23
+        s3p += q23; s3p *= (1.0 - k3[t])
+        q34 = s3p / max(1, T3)
+        s3p -= q34
+        s4p += q34; s4p *= (1.0 - k4[t])
+        S1[t], S2[t], S3[t], S4[t] = s1p, s2p, s3p, s4p
+
+    contrib_ctl = (W_S["S1"]*S1 + W_S["S2"]*S2 + W_S["S3"]*S3 + W_S["S4"]*S4)
+    return {"contrib_ctl": contrib_ctl, "mask": mask}
+
 # ================== OPTIMIZACIÓN DE ESCENARIOS ==================
 st.header("⚙️ Optimización de escenario de manejo")
 
