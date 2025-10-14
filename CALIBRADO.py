@@ -42,16 +42,17 @@ is_percent = st.sidebar.checkbox("Valores en % (no 0–1)", value=True)
 is_cum     = st.sidebar.checkbox("La serie es acumulada (EMERAC)", value=False)
 
 # === LECTURA SEGURA ===
-import chardet, io
+import io
 
-# Detecta tipo de archivo
 if up.name.lower().endswith((".xlsx", ".xls")):
     df0 = pd.read_excel(up)
 else:
+    # Intenta decodificar en UTF-8, y si falla usa Latin-1
     raw_bytes = up.read()
-    # Detecta codificación probable
-    enc_guess = chardet.detect(raw_bytes)["encoding"] or "utf-8"
-    raw_text = raw_bytes.decode(enc_guess, errors="replace")
+    try:
+        raw_text = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        raw_text = raw_bytes.decode("latin-1", errors="replace")
 
     # Intenta detección automática de separador
     try:
@@ -92,6 +93,12 @@ if is_percent:
 
 serie = serie.clip(lower=0.0)
 df_daily = pd.DataFrame({"fecha": idx, "EMERREL": serie.values})
+
+st.success(f"✅ Archivo leído correctamente ({len(df_daily)} días entre {df_daily['fecha'].min().date()} y {df_daily['fecha'].max().date()}).")
+
+
+
+
 
 st.success(f"✅ Archivo leído correctamente ({len(df_daily)} días entre {df_daily['fecha'].min().date()} y {df_daily['fecha'].max().date()}).")
 
