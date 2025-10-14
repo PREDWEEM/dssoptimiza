@@ -389,7 +389,8 @@ def simulate_chained(emerrel_series, one_minus_ciec, sow_date, k1, k2, k3, k4,
                      T1=6, T2=21, T3=32, factor_area_to_plants=None):
     """Devuelve dict con stocks S1..S4 y contribución diaria (pl/m²·día) para SIN control y CON control."""
     ts_local = pd.to_datetime(emerrel_series.index)
-    dates_d  = ts_local.dt.date.values
+    # ts_local es un DatetimeIndex, no una Serie
+    dates_d  = np.array([d.date() for d in ts_local])
     mask     = (dates_d >= sow_date)
     b_raw    = emerrel_series.to_numpy(float)
     b_after_comp = np.where(mask, b_raw * one_minus_ciec, 0.0)  # competencia del cultivo sobre ingresos S1
