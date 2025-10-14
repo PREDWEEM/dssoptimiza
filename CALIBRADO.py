@@ -402,75 +402,101 @@ def combine_kill(*terms):
     return np.clip(1.0 - base, 0.0, 1.0)
 
 # ========================= SIMULACIÓN ENCADENADA =========================
-def simulate_chained(emerrel_series, one_minus_ciec, sow_date, k1, k2, k3, k4,
-                     T1=6, T2=21, T3=32, factor_area_to_plants=None):
-    """Devuelve dict con stocks S1..S4 y contribución diaria (pl/m²·día) para SIN control y CON control."""
-    ts_local = pd.to_datetime(emerrel_series.index)
-    # ts_local es un DatetimeIndex, no una Serie
-    dates_d  = np.array([d.date() for d in ts_local])
-    mask     = (dates_d >= sow_date)
-    b_raw    = emerrel_series.to_numpy(float)
-    b_after_comp = np.where(mask, b_raw * one_minus_ciec, 0.0)  # competencia del cultivo sobre ingresos S1
+def simulate_chained(
+    emerrel_series,
+    one_minus_ciec,
+    sow_date,
+    k1, k2, k3, k4,
+    T1=6, T2=21, T3=32,
+    factor_area_to_plants=None
+):
+    """
+    Simula la dinámica encadenada S1→S4 con bloqueo biológico.
+    - Los flujos entre estados ocurren sólo para las plantas sobrevivientes.
+    - Si se controla S1 completamente, no hay transición hacia S2–S4.
+    - one_minus_ciec representa la supresión por competencia del cultivo (1−Ciec).
+    """
 
-    # Convertir a plantas base (para cap posterior y referencia)
-    if factor_area_to_plants is None:
-        base_pl_daily = np.full_like(b_after_comp, np.nan, dtype=float)
-    else:
+    # Asegurar índice temporal correcto
+    ts_local = pd.to_datetime(emerrel_series.index)
+    dates_d = np.array([d.date() for d in ts_local])  # ✅ robusto contra TypeError
+
+    # Filtrado según siembra
+    mask = (dates_d >= sow_date)
+
+    # Ingreso diario a S1 (afectado por supresión del cultivo)
+    b_raw = emerrel_series.to_numpy(float)
+    b_after_comp = np.where(mask, b_raw * one_minus_ciec, 0.0)
+
+    # Conversión a plantas (si hay factor de escala disponible)
+    if factor_area_to_plants is not None:
         base_pl_daily = np.where(mask, b_raw * factor_area_to_plants, 0.0)
+    else:
+        base_pl_daily = np.full_like(b_after_comp, np.nan, dtype=float)
 
     n = len(b_after_comp)
-    # SIN control (solo competencia del cultivo en el ingreso)
+
+    # SIN control (solo competencia del cultivo)
     S1_0 = np.zeros(n); S2_0 = np.zeros(n); S3_0 = np.zeros(n); S4_0 = np.zeros(n)
-    # CON control (kill diario por estado)
+    # CON control (encadenado con bloqueo)
     S1 = np.zeros(n);   S2 = np.zeros(n);   S3 = np.zeros(n);   S4 = np.zeros(n)
 
+    # Iteración temporal
     for t in range(n):
-        inflow = b_after_comp[t]  # ingreso a S1
-        # --- SIN control ---
+        inflow = b_after_comp[t]  # reclutamiento diario
+
+        # --- SIN CONTROL ---
         if t == 0:
-            s1_prev=s2_prev=s3_prev=s4_prev = 0.0
+            s1_prev = s2_prev = s3_prev = s4_prev = 0.0
         else:
             s1_prev, s2_prev, s3_prev, s4_prev = S1_0[t-1], S2_0[t-1], S3_0[t-1], S4_0[t-1]
-        # progresión uniforme por día
+
+        # Flujos de progreso natural entre estados
         flow12 = s1_prev / max(1, T1)
         flow23 = s2_prev / max(1, T2)
         flow34 = s3_prev / max(1, T3)
+
         S1_0[t] = s1_prev + inflow - flow12
         S2_0[t] = s2_prev + flow12  - flow23
         S3_0[t] = s3_prev + flow23  - flow34
-        S4_0[t] = s4_prev + flow34  # S4 sin salida
+        S4_0[t] = s4_prev + flow34
 
-        # --- CON control ---
+        # --- CON CONTROL ---
         if t == 0:
-            s1p=s2p=s3p=s4p = 0.0
+            s1p = s2p = s3p = s4p = 0.0
         else:
             s1p, s2p, s3p, s4p = S1[t-1], S2[t-1], S3[t-1], S4[t-1]
-        # aplica kill del día previo al avance:
-        s1p = s1p * (1.0 - k1[t-1]) if t>0 else s1p
-        s2p = s2p * (1.0 - k2[t-1]) if t>0 else s2p
-        s3p = s3p * (1.0 - k3[t-1]) if t>0 else s3p
-        s4p = s4p * (1.0 - k4[t-1]) if t>0 else s4p
 
-        # entra nuevo reclutamiento hoy y se le aplica kill del día t
-        s1p = s1p + inflow
-        s1p = s1p * (1.0 - k1[t])  # lo muerto en S1 NO progresa ⇒ bloqueo natural
+        # Mortalidad previa
+        if t > 0:
+            s1p *= (1.0 - k1[t-1])
+            s2p *= (1.0 - k2[t-1])
+            s3p *= (1.0 - k3[t-1])
+            s4p *= (1.0 - k4[t-1])
 
-        # progresión con bloqueo: solo lo vivo progresa
+        # Ingreso nuevo (reclutamiento S1)
+        s1p += inflow
+        s1p *= (1.0 - k1[t])  # bloqueo: lo muerto no progresa
+
+        # Transición encadenada (solo sobrevivientes)
         q12 = s1p / max(1, T1)
-        s1p = s1p - q12
-        s2p = s2p + q12
-        s2p = s2p * (1.0 - k2[t])  # kill en S2 antes de pasar a S3
+        s1p -= q12
+        s2p += q12
+        s2p *= (1.0 - k2[t])  # kill en S2
+
         q23 = s2p / max(1, T2)
-        s2p = s2p - q23
-        s3p = s3p + q23
-        s3p = s3p * (1.0 - k3[t])
+        s2p -= q23
+        s3p += q23
+        s3p *= (1.0 - k3[t])  # kill en S3
+
         q34 = s3p / max(1, T3)
-        s3p = s3p - q34
-        s4p = (s4p + q34) * (1.0 - k4[t])  # kill en S4 (permite mortalidad de bancos tardíos)
+        s3p -= q34
+        s4p += q34
+        s4p *= (1.0 - k4[t])  # kill en S4 (residuos tardíos)
 
         S1[t], S2[t], S3[t], S4[t] = s1p, s2p, s3p, s4p
 
-    # contribuciones diarias (pl/m²·día) por pesos
+    # Contribución ponderada por estado
     contrib_0   = W_S["S1"]*S1_0 + W_S["S2"]*S2_0 + W_S["S3"]*S3_0 + W_S["S4"]*S4_0
     contrib_ctl = W_S["S1"]*S1   + W_S["S2"]*S2   + W_S["S3"]*S3   + W_S["S4"]*S4
 
