@@ -612,7 +612,7 @@ def simulate_chained(
     contrib_ctl = (W_S["S1"]*S1 + W_S["S2"]*S2 + W_S["S3"]*S3 + W_S["S4"]*S4)
     return {"contrib_ctl": contrib_ctl, "mask": mask}
 
-# ================== OPTIMIZACIÓN DE ESCENARIOS ==================
+# ================== OPTIMIZACIÓN DE ESCENARIOS (completa) ==================
 st.header("⚙️ Optimización de escenario de manejo")
 
 with st.expander("Configuración del optimizador", expanded=False):
@@ -624,12 +624,11 @@ with st.expander("Configuración del optimizador", expanded=False):
     run_opt = st.button("🚀 Ejecutar optimización")
 
 # ---------------- Definición del objetivo ----------------
-def simulate_loss(preR_d, preemR_d, postR_d, ef_preR, ef_preemR, ef_postR):
+def simulate_loss(preR_d, preemR_d, postR_d, gram_d, ef_preR, ef_preemR, ef_postR, ef_gram):
     """
     Corre la simulación encadenada con fechas y eficiencias dadas.
     Devuelve la pérdida (%) o el A2_ctrl según objetivo.
     """
-    # Ventanas válidas
     fechas_d = ts.dt.date.values
 
     def wres(d, dur):
@@ -640,10 +639,10 @@ def simulate_loss(preR_d, preemR_d, postR_d, ef_preR, ef_preemR, ef_postR):
         w[mask] = 1.0
         return w
 
-    # Mortalidades por estado
-    k1 = (ef_preR/100)*wres(preR_d, preR_days) + (ef_preemR/100)*wres(preemR_d, preemR_days) + (ef_postR/100)*wres(postR_d, post_res_dias)
-    k2 = (ef_preR/100)*wres(preR_d, preR_days) + (ef_preemR/100)*wres(preemR_d, preemR_days) + (ef_postR/100)*wres(postR_d, post_res_dias)
-    k3 = (ef_postR/100)*wres(postR_d, post_res_dias)
+    # Mortalidades (eficiencias dinámicas)
+    k1 = (ef_preR/100)*wres(preR_d, preR_days) + (ef_preemR/100)*wres(preemR_d, preemR_days) + (ef_gram/100)*wres(gram_d, POST_GRAM_FORWARD_DAYS) + (ef_postR/100)*wres(postR_d, post_res_dias)
+    k2 = (ef_preR/100)*wres(preR_d, preR_days) + (ef_preemR/100)*wres(preemR_d, preemR_days) + (ef_gram/100)*wres(gram_d, POST_GRAM_FORWARD_DAYS) + (ef_postR/100)*wres(postR_d, post_res_dias)
+    k3 = (ef_gram/100)*wres(gram_d, POST_GRAM_FORWARD_DAYS) + (ef_postR/100)*wres(postR_d, post_res_dias)
     k4 = (ef_postR/100)*wres(postR_d, post_res_dias)
 
     sim = simulate_chained(
@@ -672,14 +671,16 @@ def grid_search():
     results = []
     preR_opts = [sow_date - timedelta(days=x) for x in [25,20,15]]
     preem_opts = [sow_date + timedelta(days=x) for x in [0,5,10]]
+    gram_opts = [sow_date + timedelta(days=x) for x in [0,5,10]]
     post_opts = [sow_date + timedelta(days=x) for x in [20,30,40,50]]
     effs = [60,70,80,90]
     for preR_d in preR_opts:
         for preemR_d in preem_opts:
-            for postR_d in post_opts:
-                for e1 in effs:
-                    val = simulate_loss(preR_d, preemR_d, postR_d, e1, e1, e1)
-                    results.append((val, preR_d, preemR_d, postR_d, e1))
+            for gram_d in gram_opts:
+                for postR_d in post_opts:
+                    for e1 in effs:
+                        val = simulate_loss(preR_d, preemR_d, postR_d, gram_d, e1, e1, e1, e1)
+                        results.append((val, preR_d, preemR_d, gram_d, postR_d, e1))
     return results
 
 def random_search(n=100):
@@ -687,15 +688,16 @@ def random_search(n=100):
     for _ in range(n):
         preR_d = sow_date - timedelta(days=np.random.randint(15,40))
         preemR_d = sow_date + timedelta(days=np.random.randint(0,10))
+        gram_d = sow_date + timedelta(days=np.random.randint(0,10))
         postR_d = sow_date + timedelta(days=np.random.randint(20,60))
         e1 = np.random.uniform(50,95)
-        val = simulate_loss(preR_d, preemR_d, postR_d, e1, e1, e1)
-        results.append((val, preR_d, preemR_d, postR_d, e1))
+        val = simulate_loss(preR_d, preemR_d, postR_d, gram_d, e1, e1, e1, e1)
+        results.append((val, preR_d, preemR_d, gram_d, postR_d, e1))
     return results
 
 def simulated_annealing(n=100, T0=1.5, cool=0.95):
     current = (sow_date - timedelta(days=20), sow_date+timedelta(days=5),
-               sow_date+timedelta(days=30), 80)
+               sow_date+timedelta(days=5), sow_date+timedelta(days=30), 80)
     best_val = simulate_loss(*current)
     best = current
     T = T0
@@ -703,8 +705,9 @@ def simulated_annealing(n=100, T0=1.5, cool=0.95):
         candidate = (
             current[0] + timedelta(days=np.random.randint(-3,3)),
             current[1] + timedelta(days=np.random.randint(-3,3)),
-            current[2] + timedelta(days=np.random.randint(-5,5)),
-            np.clip(current[3] + np.random.uniform(-5,5), 50, 95)
+            current[2] + timedelta(days=np.random.randint(-3,3)),
+            current[3] + timedelta(days=np.random.randint(-5,5)),
+            np.clip(current[4] + np.random.uniform(-5,5), 50, 95)
         )
         val = simulate_loss(*candidate)
         delta = val - best_val if "Minimizar" in opt_objective else best_val - val
@@ -728,17 +731,49 @@ if run_opt:
     if not results:
         st.error("No se obtuvieron resultados válidos.")
     else:
-        df_res = pd.DataFrame(results, columns=["valor","preR_d","preemR_d","postR_d","eficiencia"])
+        df_res = pd.DataFrame(results, columns=["valor","preR_d","preemR_d","gram_d","postR_d","eficiencia"])
         if "Minimizar" in opt_objective:
             best = df_res.loc[df_res["valor"].idxmin()]
         else:
             best = df_res.loc[df_res["valor"].idxmax()]
+
         st.success(f"🧭 Mejor escenario encontrado:\n"
-                   f"PresiembraR={best.preR_d} · PreemR={best.preemR_d} · PostR={best.postR_d}\n"
-                   f"Eficiencia={best.eficiencia:.1f}% · {'Pérdida mínima' if 'Minimizar' in opt_objective else 'A2 máxima'}={best.valor:.2f}")
+                   f"PresiembraR={best.preR_d} · PreemR={best.preemR_d} · Graminicida={best.gram_d} · PostR={best.postR_d}\n"
+                   f"Eficiencia={best.eficiencia:.1f}% · "
+                   f"{'Pérdida mínima' if 'Minimizar' in opt_objective else 'A2 máxima'}={best.valor:.2f}")
 
-        st.dataframe(df_res.sort_values("valor", ascending=("Minimizar" in opt_objective)))
+        # ===== Gráfico de pérdida de rinde =====
+        x_curve = np.linspace(0.0, MAX_PLANTS_CAP, 400)
+        y_curve = _loss(x_curve)
 
+        st.subheader("📉 Curva de pérdida de rendimiento (%) vs densidad efectiva (x)")
+        fig_loss = go.Figure()
+        fig_loss.add_trace(go.Scatter(x=x_curve, y=y_curve, mode="lines", name="Modelo calibrado"))
+        if "Minimizar" in opt_objective:
+            fig_loss.add_trace(go.Scatter(x=[best.valor], y=[best.valor], mode="markers+text",
+                                          name="Escenario óptimo", text=[f"{best.valor:.2f}%"],
+                                          textposition="top center"))
+        fig_loss.update_layout(
+            xaxis_title="Densidad efectiva (x, pl·m²)",
+            yaxis_title="Pérdida de rendimiento (%)",
+            title="Función de pérdida calibrada"
+        )
+        st.plotly_chart(fig_loss, use_container_width=True)
+
+        # ===== Líneas verticales en EMERREL =====
+        st.subheader("🌿 Fechas óptimas sobre EMERREL")
+        fig_treat = go.Figure()
+        fig_treat.add_trace(go.Scatter(x=df_plot["fecha"], y=df_plot["EMERREL"], mode="lines", name="EMERREL"))
+        for label, date in [("PresiembraR", best.preR_d), ("PreemR", best.preemR_d),
+                            ("Graminicida", best.gram_d), ("PostR", best.postR_d)]:
+            fig_treat.add_vline(x=date, line_dash="dot", line_color="red")
+            fig_treat.add_annotation(x=date, y=1.05*df_plot["EMERREL"].max(), text=label,
+                                     showarrow=False, yref="y", bgcolor="rgba(255,0,0,0.2)")
+        fig_treat.update_layout(
+            title="EMERREL con tratamientos óptimos",
+            xaxis_title="Fecha", yaxis_title="EMERREL (fracción)"
+        )
+        st.plotly_chart(fig_treat, use_container_width=True)
 
 
 
