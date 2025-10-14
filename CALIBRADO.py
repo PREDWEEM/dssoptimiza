@@ -1,51 +1,49 @@
 # -*- coding: utf-8 -*-
-# PREDWEEM — Simulador calibrado (ENCADENADO) + Visualización + Optimización liviana
-# - Estados encadenados S1->S2->S3->S4 con bloqueo biológico real.
-# - Tratamientos como barras horizontales (timeline) debajo del gráfico.
-# - Sin etiqueta de "Overlapping".
-# - Conversión por AUC al tope A2 y cap diario.
+# PREDWEEM — Simulador calibrado con mortalidad encadenada S1→S4
+# - Si se controla S1 al 100%, no hay transición posible hacia S2–S4.
+# - Si se controla S1 y S2, no hay transición hacia S3–S4, etc.
+# - Timeline de tratamientos (barras horizontales) sin aviso de overlapping.
+#
+# Parámetros calibrados:
+#   Pesos por estado: w1=0.369, w2=0.393, w3=1.150, w4=1.769
+#   Pérdida: loss(x) = α*x / (1 + (α*x/Lmax)), α=0.503, Lmax=125.91
+#   Tope A2 seleccionable: 250 / 125 / 62 pl·m²
 
-import io, re, math, datetime as dt, itertools, random
-from datetime import timedelta
+import io, re, math, datetime as dt
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
+from datetime import timedelta
 
-# ========================= PARÁMETROS CALIBRADOS =========================
+# ================== PARÁMETROS CALIBRADOS ==================
 ALPHA = 0.503
 LMAX  = 125.91
-W_S   = {"S1": 0.369, "S2": 0.393, "S3": 1.150, "S4": 1.769}   # pesos por estado
-# Tiempos de residencia (días) para el encadenamiento:
-T1, T2, T3 = 6, 21, 32  # S1, S2, S3; S4 = > T1+T2+T3 (sin salida)
-# Tratamientos:
-NR_DAYS_DEFAULT = 10
-POST_GRAM_FORWARD_DAYS = 11
-PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW = 14
-PREEM_R_MAX_AFTER_SOW_DAYS = 10
+W_S   = {"S1": 0.369, "S2": 0.393, "S3": 1.150, "S4": 1.769}
 
 def _loss(x):
     x = np.asarray(x, dtype=float)
     return ALPHA * x / (1.0 + (ALPHA * x / LMAX))
 
-# ========================= STREAMLIT UI STATE =========================
-if "opt_running" not in st.session_state: st.session_state.opt_running = False
-if "opt_stop" not in st.session_state:    st.session_state.opt_stop = False
-
-APP_TITLE = "PREDWEEM · Encadenado S1→S4 + Timeline"
+# ================== STREAMLIT UI ==================
+APP_TITLE = "PREDWEEM · Simulador (encadenado) + Timeline"
 st.set_page_config(page_title=APP_TITLE, layout="wide", initial_sidebar_state="expanded")
 st.title(APP_TITLE)
 
-# ========================= HELPERS I/O =========================
+NR_DAYS_DEFAULT = 10
+POST_GRAM_FORWARD_DAYS = 11
+PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW = 14
+PREEM_R_MAX_AFTER_SOW_DAYS = 10
+
+# ================== Utilidades ==================
 def sniff_sep_dec(text: str):
     sample = text[:8000]
     counts = {sep: sample.count(sep) for sep in [",", ";", "\t"]}
     sep_guess = max(counts, key=counts.get) if counts else ","
     dec_guess = "."
-    if sample.count(",") > sample.count(".") and re.search(r",\d", sample):
-        dec_guess = ","
+    if sample.count(",") > sample.count(".") and re.search(r",\d", sample): dec_guess = ","
     return sep_guess, dec_guess
 
 @st.cache_data(show_spinner=False)
@@ -57,8 +55,7 @@ def read_raw(up, url):
     if up is not None:
         b = up.read()
         return b if isinstance(b, (bytes, bytearray)) else str(b).encode("utf-8", errors="ignore")
-    if url:
-        return read_raw_from_url(url)
+    if url: return read_raw_from_url(url)
     raise ValueError("No hay fuente de datos.")
 
 def parse_csv(raw, sep_opt, dec_opt, encoding="utf-8", on_bad="warn"):
@@ -102,24 +99,19 @@ def cap_cumulative(series, cap, active_mask):
             out[i] = 0.0
     return out
 
-# ========================= SIDEBAR: ESCENARIO Y DATOS =========================
+# ================== Entrada de datos ==================
 with st.sidebar:
     st.header("Escenario de infestación")
-    MAX_PLANTS_CAP = float(st.selectbox(
-        "Tope de densidad efectiva (pl·m²)", options=[250, 125, 62], index=0,
-        help="Tope único de densidad efectiva y A2 (calibrado)."
-    ))
-
-st.caption(f"AUC(EMERREL cruda) ≙ tope A2 **= {int(MAX_PLANTS_CAP)} pl·m²**.")
+    MAX_PLANTS_CAP = float(st.selectbox("Tope de densidad efectiva (pl·m²)", options=[250,125,62], index=0))
 
 with st.sidebar:
     st.header("Datos de entrada")
-    up = st.file_uploader("CSV o Excel", type=["csv", "xlsx", "xls"])
+    up = st.file_uploader("CSV o Excel", type=["csv","xlsx","xls"])
     url = st.text_input("…o URL raw (opcional)", placeholder="https://raw.githubusercontent.com/usuario/repo/main/emer.csv")
     sep_opt = st.selectbox("Delimitador (CSV)", ["auto", ",", ";", "\\t"], index=0)
     dec_opt = st.selectbox("Decimal", ["auto", ".", ","], index=0)
     dayfirst = st.checkbox("Fecha: dd/mm/yyyy", value=True)
-    is_cumulative = st.checkbox("Mi serie es acumulada (EMERAC)", value=False)
+    is_cumulative = st.checkbox("Serie acumulada (EMERAC)", value=False)
     as_percent = st.checkbox("Valores en % (no 0–1)", value=True)
     dedup = st.selectbox("Si hay fechas duplicadas…", ["sumar", "promediar", "primera"], index=0)
     fill_gaps = st.checkbox("Rellenar días faltantes con 0", value=False)
@@ -129,8 +121,7 @@ if up is None and not url:
 
 try:
     if up is not None and up.name.lower().endswith((".xlsx",".xls")):
-        df0 = pd.read_excel(up)
-        meta = {"sep":"(Excel)","dec":"auto","enc":"n/a"}
+        df0 = pd.read_excel(up); meta = {"sep":"(Excel)","dec":"auto","enc":"n/a"}
     else:
         raw = read_raw(up, url)
         if not raw or len(raw) == 0: st.error("El archivo/URL está vacío."); st.stop()
@@ -142,6 +133,7 @@ except (URLError, HTTPError) as e:
 except Exception as e:
     st.error(f"No se pudo leer el archivo: {e}"); st.stop()
 
+# Selección de columnas y depuración
 cols = list(df0.columns)
 with st.expander("Seleccionar columnas y depurar datos", expanded=True):
     c_fecha = st.selectbox("Columna de fecha", cols, index=0)
@@ -174,7 +166,7 @@ with st.expander("Seleccionar columnas y depurar datos", expanded=True):
     emerrel = emerrel.clip(lower=0.0)
     df_plot = pd.DataFrame({"fecha": pd.to_datetime(df["fecha"]), "EMERREL": emerrel})
 
-# ========================= SIEMBRA, CANOPIA, CIEC =========================
+# ================== Siembra & Canopia ==================
 years = df_plot["fecha"].dt.year.dropna().astype(int)
 year_ref = int(years.mode().iloc[0]) if len(years) else dt.date.today().year
 sow_min = dt.date(year_ref, 5, 1); sow_max = dt.date(year_ref, 8, 1)
@@ -221,7 +213,6 @@ def compute_canopy(fechas: pd.Series, sow_date: dt.date, mode_canopy: str,
 
 FC, LAI = compute_canopy(df_plot["fecha"], sow_date, mode_canopy, int(t_lag), int(t_close),
                          float(cov_max), float(lai_max), float(k_beer))
-
 if use_ciec:
     Ca_safe = float(Ca) if float(Ca) > 0 else 1e-6
     Cs_safe = float(Cs) if float(Cs) > 0 else 1e-6
@@ -230,11 +221,27 @@ if use_ciec:
 else:
     Ciec = np.zeros_like(LAI, dtype=float)
 
+df_ciec = pd.DataFrame({"fecha": df_plot["fecha"], "Ciec": Ciec})
 one_minus_Ciec = np.clip((1.0 - Ciec).astype(float), 0.0, 1.0)
+
+# ================== Construcción de S1..S4 base (sin control) ==================
 ts = pd.to_datetime(df_plot["fecha"])
 mask_since_sow = (ts.dt.date >= sow_date)
 
-# ========================= CONVERSIÓN A PLANTAS y CAP =========================
+births = df_plot["EMERREL"].astype(float).clip(lower=0.0).to_numpy()
+births = np.where(mask_since_sow.to_numpy(), births, 0.0)
+births_series = pd.Series(births, index=ts)
+
+def roll_sum_shift(s: pd.Series, win: int, shift_days: int) -> pd.Series:
+    return s.rolling(window=win, min_periods=0).sum().shift(shift_days)
+
+# Cohortes aproximadas por edad
+S1_raw = roll_sum_shift(births_series, 6, 1).fillna(0.0).reindex(ts).to_numpy(float)
+S2_raw = roll_sum_shift(births_series, 21, 7).fillna(0.0).reindex(ts).to_numpy(float)
+S3_raw = roll_sum_shift(births_series, 32, 28).fillna(0.0).reindex(ts).to_numpy(float)
+S4_raw = births_series.cumsum().shift(60).fillna(0.0).reindex(ts).to_numpy(float)
+
+# ================== Escalado por área (AUC → tope) ==================
 auc_cruda = auc_time(ts, df_plot["EMERREL"].to_numpy(float), mask=mask_since_sow)
 if auc_cruda > 0:
     factor_area_to_plants = MAX_PLANTS_CAP / auc_cruda
@@ -243,14 +250,15 @@ else:
     factor_area_to_plants = None
     conv_caption = "No se pudo escalar por área (AUC de EMERREL cruda = 0)."
 
-# ========================= TRATAMIENTOS (UI) =========================
-fechas_d = ts.dt.date.values
-min_date = ts.min().date(); max_date = ts.max().date()
-
-def add_sched(rows, nombre, fecha_ini, dias_res=None, nota=""):
+# ================== UI de manejo (manual) ==================
+sched_rows = []
+def add_sched(nombre, fecha_ini, dias_res=None, nota=""):
     if not fecha_ini: return
     fin = (pd.to_datetime(fecha_ini) + pd.Timedelta(days=int(dias_res))).date() if dias_res else None
-    rows.append({"Intervención": nombre, "Inicio": str(fecha_ini), "Fin": str(fin) if fin else "—", "Nota": nota})
+    sched_rows.append({"Intervención": nombre, "Inicio": str(fecha_ini), "Fin": str(fin) if fin else "—", "Nota": nota})
+
+fechas_d = ts.dt.date.values
+min_date = ts.min().date(); max_date = ts.max().date()
 
 with st.sidebar:
     st.header("Manejo pre-siembra (manual)")
@@ -278,7 +286,10 @@ with st.sidebar:
     preem_min = sow_date
     preem_max = min(max_date, sow_date + timedelta(days=PREEM_R_MAX_AFTER_SOW_DAYS))
     preemR_date = st.date_input("Fecha selectivo + residual (preemergente)",
-                                value=preem_min, min_value=preem_min, max_value=preem_max, disabled=not preemR)
+                                value=preem_min,
+                                min_value=preem_min,
+                                max_value=preem_max,
+                                disabled=not preemR)
 
 with st.sidebar:
     st.header("Manejo post-emergencia (manual)")
@@ -291,7 +302,7 @@ with st.sidebar:
     post_selR_date = st.date_input("Fecha selectivo + residual (post)", value=post_min_postR, min_value=post_min_postR, max_value=max_date, disabled=not post_selR)
     post_res_dias = st.slider("Residualidad post (días)", 30, 120, 45, 1, disabled=not post_selR)
 
-# Validaciones
+# Validaciones (reglas)
 warnings = []
 def check_pre(date_val, name):
     if date_val and date_val > sow_date: warnings.append(f"{name}: debería ser ≤ fecha de siembra ({sow_date}).")
@@ -299,29 +310,30 @@ def check_post(date_val, name):
     if date_val and date_val < sow_date: warnings.append(f"{name}: debería ser ≥ fecha de siembra ({sow_date}).")
 if pre_glifo:  check_pre(pre_glifo_date, "Glifosato (pre)")
 if pre_selNR:  check_pre(pre_selNR_date, "Selectivo no residual (pre)")
-if preR and preR_date > (sow_date - timedelta(days=PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW)):
-    warnings.append(f"Presiembra residual debe ser ≤ siembra−{PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW}.")
-if preemR and (preemR_date < sow_date or preemR_date > sow_date + timedelta(days=PREEM_R_MAX_AFTER_SOW_DAYS)):
-    warnings.append(f"Preemergente residual debe estar entre siembra y siembra+{PREEM_R_MAX_AFTER_SOW_DAYS}.")
+if preR:
+    if preR_date > (sow_date - timedelta(days=PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW)):
+        warnings.append(f"Presiembra residual debe ser ≤ siembra−{PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW} ({sow_date - timedelta(days=PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW)}).")
+if preemR:
+    if preemR_date < sow_date or preemR_date > sow_date + timedelta(days=PREEM_R_MAX_AFTER_SOW_DAYS):
+        warnings.append(f"Preemergente residual debe estar entre siembra y siembra+{PREEM_R_MAX_AFTER_SOW_DAYS}.")
 if post_gram:  check_post(post_gram_date, "Graminicida (post)")
 if post_selR and post_selR_date and post_selR_date < sow_date + timedelta(days=20):
     warnings.append(f"Selectivo + residual (post): debe ser ≥ {sow_date + timedelta(days=20)}.")
 for w in warnings: st.warning(w)
 
-# Cronograma tabla (sidebar)
-sched_rows = []
-if pre_glifo: add_sched(sched_rows, "Pre · glifosato (NSr, 1d)", pre_glifo_date, None, "Barbecho")
-if pre_selNR: add_sched(sched_rows, "Pre · selectivo no residual (NR)", pre_selNR_date, NR_DAYS_DEFAULT, f"NR {NR_DAYS_DEFAULT}d")
-if preR:      add_sched(sched_rows, "Pre-SIEMBRA · selectivo + residual", preR_date, preR_days, f"Protege {preR_days}d (S1–S2)")
-if preemR:    add_sched(sched_rows, "PREEMERGENTE · selectivo + residual", preemR_date, preemR_days, f"Protege {preemR_days}d (S1–S2)")
+# Cronograma para timeline (sidebar → tabla interna)
+if pre_glifo: add_sched("Pre · glifosato (NSr, 1d)", pre_glifo_date, 1, "Barbecho")
+if pre_selNR: add_sched("Pre · selectivo no residual (NR)", pre_selNR_date, NR_DAYS_DEFAULT, f"NR {NR_DAYS_DEFAULT}d")
+if preR:      add_sched("Pre-SIEMBRA · selectivo + residual", preR_date, preR_days, f"Protege {preR_days}d (S1–S2)")
+if preemR:    add_sched("PREEMERGENTE · selectivo + residual", preemR_date, preemR_days, f"Protege {preemR_days}d (S1–S2)")
 if post_gram:
     ini = pd.to_datetime(post_gram_date).date()
     fin = (pd.to_datetime(post_gram_date) + pd.Timedelta(days=POST_GRAM_FORWARD_DAYS)).date()
-    sched_rows.append({"Intervención": "Post · graminicida (NR, +10d)", "Inicio": str(ini), "Fin": str(fin), "Nota": "Ventana día + 10"})
-if post_selR: add_sched(sched_rows, "Post · selectivo + residual", post_selR_date, post_res_dias, f"Protege {post_res_dias}d")
+    sched_rows.append({"Intervención": "Post · graminicida (NR, +10d)", "Inicio": str(ini), "Fin": str(fin), "Nota": "Ventana día de app + 10 días"})
+if post_selR: add_sched("Post · selectivo + residual", post_selR_date, post_res_dias, f"Protege {post_res_dias}d")
 sched = pd.DataFrame(sched_rows)
 
-# Eficiencias
+# ================== Eficiencias ==================
 with st.sidebar:
     st.header("Eficiencia de control (%)")
     ef_pre_glifo   = st.slider("Glifosato (pre, 1d)", 0, 100, 90, 1) if pre_glifo else 0
@@ -331,293 +343,109 @@ with st.sidebar:
     ef_post_gram   = st.slider(f"Graminicida (post, +10d)", 0, 100, 65, 1) if post_gram else 0
     ef_post_selR   = st.slider("Selectivo + residual (post)", 0, 100, 70, 1) if post_selR else 0
 
-with st.sidebar:
-    st.header("Decaimiento en residuales")
-    decaimiento_tipo = st.selectbox("Tipo de decaimiento", ["Ninguno", "Lineal", "Exponencial"], index=0)
-    if decaimiento_tipo == "Exponencial":
-        half_life = st.number_input("Semivida (días)", 1, 120, 20, 1)
-        lam_exp = math.log(2) / max(1e-6, half_life)
-    else:
-        lam_exp = None
-if decaimiento_tipo != "Exponencial": lam_exp = None
+# ================== Ventanas de efecto (arrays de fechas.date) ==================
+fechas_d = ts.dt.date.values
 
-# ========================= PESOS DE TRATAMIENTO POR DÍA =========================
 def weights_one_day(date_val):
-    """Devuelve un vector binario (1 solo día activo) según la fecha dada."""
     w = np.zeros_like(fechas_d, float)
-    if not date_val:
-        return w
-    d0 = pd.Timestamp(date_val).date()
+    if not date_val: return w
+    d0 = date_val
     mask = (fechas_d == d0)
     w[mask] = 1.0
     return w
 
-
 def weights_residual(start_date, dias):
-    """
-    Devuelve un vector (0–1) con el peso diario de la residualidad herbicida,
-    aplicando decaimiento lineal o exponencial según configuración del usuario.
-    Compatible con fechas tipo datetime.date o Timestamp.
-    """
     w = np.zeros_like(fechas_d, float)
-    if (not start_date) or (not dias) or (int(dias) <= 0):
-        return w
-
-    # Convertir explícitamente a tipo date (evita conflictos Timestamp vs date)
-    d0 = pd.Timestamp(start_date).date()
-    d1 = (pd.Timestamp(start_date) + pd.Timedelta(days=int(dias))).date()
-
+    if (not start_date) or (not dias) or (int(dias) <= 0): return w
+    d0 = start_date; d1 = start_date + timedelta(days=int(dias))
     mask = (fechas_d >= d0) & (fechas_d < d1)
-    if not mask.any():
-        return w
-
-    idxs = np.where(mask)[0]
-    t_rel = np.arange(len(idxs), dtype=float)
-
-    # Decaimiento del efecto herbicida
-    if decaimiento_tipo == "Ninguno":
-        w[idxs] = 1.0
-    elif decaimiento_tipo == "Lineal":
-        L = max(1, len(idxs))
-        w[idxs] = 1.0 - (t_rel / max(1.0, L - 1))
-    elif decaimiento_tipo == "Exponencial" and lam_exp is not None:
-        w[idxs] = np.exp(-lam_exp * t_rel)
-    else:
-        w[idxs] = 1.0
-
+    if not mask.any(): return w
+    w[mask] = 1.0
     return w
 
+# ================== Mortalidad encadenada S1→S4 ==================
+# Factores de supervivencia por estado por día (1 = no afecta; 0 = mata 100%)
+ctrl_S1 = np.ones_like(fechas_d, float)
+ctrl_S2 = np.ones_like(fechas_d, float)
+ctrl_S3 = np.ones_like(fechas_d, float)
+ctrl_S4 = np.ones_like(fechas_d, float)
 
-def combine_kill(*terms):
-    """
-    Combina efectos de mortalidad independientes:
-    producto de (1 − eficiencia×peso) → 1 − producto acumulado.
-    Ejemplo: combine_kill(0.8*w1, 0.6*w2) = 1 - (1−0.8w1)*(1−0.6w2)
-    """
-    if not terms:
-        return np.zeros_like(fechas_d, float)
-    base = np.ones_like(fechas_d, float)
-    for t in terms:
-        base *= (1.0 - np.clip(t, 0.0, 1.0))
-    return np.clip(1.0 - base, 0.0, 1.0)
+def apply_eff(weights, eff_pct, states):
+    if eff_pct <= 0: return
+    reduc = np.clip(1.0 - (eff_pct/100.0)*np.clip(weights,0.0,1.0), 0.0, 1.0)
+    if "S1" in states: np.multiply(ctrl_S1, reduc, out=ctrl_S1)
+    if "S2" in states: np.multiply(ctrl_S2, reduc, out=ctrl_S2)
+    if "S3" in states: np.multiply(ctrl_S3, reduc, out=ctrl_S3)
+    if "S4" in states: np.multiply(ctrl_S4, reduc, out=ctrl_S4)
 
-# ========================= SIMULACIÓN ENCADENADA =========================
-def simulate_chained(
-    emerrel_series,
-    one_minus_ciec,
-    sow_date,
-    k1, k2, k3, k4,
-    T1=6, T2=21, T3=32,
-    factor_area_to_plants=None
-):
-    """
-    Simula la dinámica encadenada S1→S4 con bloqueo biológico.
-    - Los flujos entre estados ocurren sólo para las plantas sobrevivientes.
-    - Si se controla S1 completamente, no hay transición hacia S2–S4.
-    - one_minus_ciec representa la supresión por competencia del cultivo (1−Ciec).
-    """
+# Aplicación (respetando reglas de ventana)
+if preR:      apply_eff(weights_residual(preR_date,   preR_days),   ef_preR,      ["S1","S2"])
+if preemR:    apply_eff(weights_residual(preemR_date, preemR_days), ef_preemR,    ["S1","S2"])
+if pre_selNR: apply_eff(weights_residual(pre_selNR_date, NR_DAYS_DEFAULT), ef_pre_selNR, ["S1","S2","S3","S4"])
+if pre_glifo: apply_eff(weights_one_day(pre_glifo_date), ef_pre_glifo, ["S1","S2","S3","S4"])
+if post_gram: apply_eff(weights_residual(post_gram_date, POST_GRAM_FORWARD_DAYS), ef_post_gram, ["S1","S2","S3"])
+if post_selR: apply_eff(weights_residual(post_selR_date, post_res_dias), ef_post_selR, ["S1","S2","S3","S4"])
 
-    # Asegurar índice temporal correcto
-    ts_local = pd.to_datetime(emerrel_series.index)
-    dates_d = np.array([d.date() for d in ts_local])  # ✅ robusto contra TypeError
+# Escalado a plantas y competencia cultivo
+if factor_area_to_plants is not None:
+    S1_pl0 = S1_raw * one_minus_Ciec * W_S["S1"] * factor_area_to_plants
+    S2_pl0 = S2_raw * one_minus_Ciec * W_S["S2"] * factor_area_to_plants
+    S3_pl0 = S3_raw * one_minus_Ciec * W_S["S3"] * factor_area_to_plants
+    S4_pl0 = S4_raw * one_minus_Ciec * W_S["S4"] * factor_area_to_plants
+else:
+    S1_pl0 = S2_pl0 = S3_pl0 = S4_pl0 = np.zeros_like(fechas_d, float)
 
-    # Filtrado según siembra
-    mask = (dates_d >= sow_date)
+# FACTOR ENCADENADO: si S1=0 ⇒ S2=S3=S4=0; si S1>0 y S2=0 ⇒ S3=S4=0; etc.
+F1 = ctrl_S1
+F2 = ctrl_S1 * ctrl_S2
+F3 = ctrl_S1 * ctrl_S2 * ctrl_S3
+F4 = ctrl_S1 * ctrl_S2 * ctrl_S3 * ctrl_S4
 
-    # Ingreso diario a S1 (afectado por supresión del cultivo)
-    b_raw = emerrel_series.to_numpy(float)
-    b_after_comp = np.where(mask, b_raw * one_minus_ciec, 0.0)
+# Contribuciones sin control (solo competencia y pesos)
+contrib_0 = np.where(mask_since_sow.to_numpy(), (S1_pl0 + S2_pl0 + S3_pl0 + S4_pl0), 0.0)
 
-    # Conversión a plantas (si hay factor de escala disponible)
-    if factor_area_to_plants is not None:
-        base_pl_daily = np.where(mask, b_raw * factor_area_to_plants, 0.0)
-    else:
-        base_pl_daily = np.full_like(b_after_comp, np.nan, dtype=float)
+# Con control encadenado
+S1_ctl = S1_pl0 * F1
+S2_ctl = S2_pl0 * F2
+S3_ctl = S3_pl0 * F3
+S4_ctl = S4_pl0 * F4
+contrib_ctl = np.where(mask_since_sow.to_numpy(), (S1_ctl + S2_ctl + S3_ctl + S4_ctl), 0.0)
 
-    n = len(b_after_comp)
+# Tope A2 diario por acumulación
+if factor_area_to_plants is not None:
+    base_pl_daily = df_plot["EMERREL"].to_numpy(float) * factor_area_to_plants
+    base_pl_daily = np.where(mask_since_sow.to_numpy(), base_pl_daily, 0.0)
+    base_pl_daily_cap = cap_cumulative(base_pl_daily, MAX_PLANTS_CAP, mask_since_sow.to_numpy())
 
-    # SIN control (solo competencia del cultivo)
-    S1_0 = np.zeros(n); S2_0 = np.zeros(n); S3_0 = np.zeros(n); S4_0 = np.zeros(n)
-    # CON control (encadenado con bloqueo)
-    S1 = np.zeros(n);   S2 = np.zeros(n);   S3 = np.zeros(n);   S4 = np.zeros(n)
+    sup_cap      = np.minimum(contrib_0,   base_pl_daily_cap)
+    sup_ctrl_cap = np.minimum(contrib_ctl, base_pl_daily_cap)
+else:
+    sup_cap = sup_ctrl_cap = np.full(len(ts), np.nan)
 
-    # Iteración temporal
-    for t in range(n):
-        inflow = b_after_comp[t]  # reclutamiento diario
+# Agregación semanal (W-MON)
+df_week = pd.DataFrame({"fecha": ts,
+                        "sin_ctrl": np.where(mask_since_sow.to_numpy(), sup_cap, 0.0),
+                        "con_ctrl": np.where(mask_since_sow.to_numpy(), sup_ctrl_cap, 0.0)}
+                      ).set_index("fecha").resample("W-MON").sum().reset_index()
 
-        # --- SIN CONTROL ---
-        if t == 0:
-            s1_prev = s2_prev = s3_prev = s4_prev = 0.0
-        else:
-            s1_prev, s2_prev, s3_prev, s4_prev = S1_0[t-1], S2_0[t-1], S3_0[t-1], S4_0[t-1]
+# ===== A2 por AUC =====
+if factor_area_to_plants is not None and auc_cruda > 0:
+    sup_equiv  = np.divide(sup_cap,      factor_area_to_plants, out=np.zeros_like(sup_cap),      where=(factor_area_to_plants>0))
+    supc_equiv = np.divide(sup_ctrl_cap, factor_area_to_plants, out=np.zeros_like(sup_ctrl_cap), where=(factor_area_to_plants>0))
+    auc_sup      = auc_time(ts, sup_equiv,  mask=mask_since_sow)
+    auc_sup_ctrl = auc_time(ts, supc_equiv, mask=mask_since_sow)
+    A2_sup_final  = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP * (auc_sup      / auc_cruda))
+    A2_ctrl_final = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP * (auc_sup_ctrl / auc_cruda))
+else:
+    A2_sup_final = A2_ctrl_final = float("nan")
 
-        # Flujos de progreso natural entre estados
-        flow12 = s1_prev / max(1, T1)
-        flow23 = s2_prev / max(1, T2)
-        flow34 = s3_prev / max(1, T3)
+# ===== pérdidas vs x =====
+X2 = float(np.nansum(sup_cap[mask_since_sow]))
+X3 = float(np.nansum(sup_ctrl_cap[mask_since_sow]))
+loss_x2_pct = float(_loss(X2)) if np.isfinite(X2) else float("nan")
+loss_x3_pct = float(_loss(X3)) if np.isfinite(X3) else float("nan")
 
-        S1_0[t] = s1_prev + inflow - flow12
-        S2_0[t] = s2_prev + flow12  - flow23
-        S3_0[t] = s3_prev + flow23  - flow34
-        S4_0[t] = s4_prev + flow34
-
-        # --- CON CONTROL ---
-        if t == 0:
-            s1p = s2p = s3p = s4p = 0.0
-        else:
-            s1p, s2p, s3p, s4p = S1[t-1], S2[t-1], S3[t-1], S4[t-1]
-
-        # Mortalidad previa
-        if t > 0:
-            s1p *= (1.0 - k1[t-1])
-            s2p *= (1.0 - k2[t-1])
-            s3p *= (1.0 - k3[t-1])
-            s4p *= (1.0 - k4[t-1])
-
-        # Ingreso nuevo (reclutamiento S1)
-        s1p += inflow
-        s1p *= (1.0 - k1[t])  # bloqueo: lo muerto no progresa
-
-        # Transición encadenada (solo sobrevivientes)
-        q12 = s1p / max(1, T1)
-        s1p -= q12
-        s2p += q12
-        s2p *= (1.0 - k2[t])  # kill en S2
-
-        q23 = s2p / max(1, T2)
-        s2p -= q23
-        s3p += q23
-        s3p *= (1.0 - k3[t])  # kill en S3
-
-        q34 = s3p / max(1, T3)
-        s3p -= q34
-        s4p += q34
-        s4p *= (1.0 - k4[t])  # kill en S4 (residuos tardíos)
-
-        S1[t], S2[t], S3[t], S4[t] = s1p, s2p, s3p, s4p
-
-    # Contribución ponderada por estado
-    contrib_0   = W_S["S1"]*S1_0 + W_S["S2"]*S2_0 + W_S["S3"]*S3_0 + W_S["S4"]*S4_0
-    contrib_ctl = W_S["S1"]*S1   + W_S["S2"]*S2   + W_S["S3"]*S3   + W_S["S4"]*S4
-
-    return {
-        "S0": (S1_0, S2_0, S3_0, S4_0),
-        "S":  (S1,   S2,   S3,   S4),
-        "contrib_0": contrib_0,
-        "contrib_ctl": contrib_ctl,
-        "base_pl_daily": base_pl_daily,
-        "mask": mask
-    }
-
-# ========================= CORRER SIMULACIÓN =========================
-if factor_area_to_plants is None:
-    st.info("Subí datos con AUC>0 desde siembra para simular/optimizar.")
-    st.stop()
-
-# ========================= TRATAMIENTOS → PESOS DIARIOS =========================
-# Cada tratamiento genera un vector temporal (ventana de acción) con valor 0–1 por día.
-
-# Ventanas (ya corregidas para comparar datetime.date)
-w_glifo   = weights_one_day(pre_glifo_date) if pre_glifo else np.zeros_like(fechas_d, float)
-w_preNR   = weights_residual(pre_selNR_date, NR_DAYS_DEFAULT) if pre_selNR else np.zeros_like(fechas_d, float)
-w_preR    = weights_residual(preR_date, preR_days) if preR else np.zeros_like(fechas_d, float)
-w_preemR  = weights_residual(preemR_date, preemR_days) if preemR else np.zeros_like(fechas_d, float)
-w_postG   = weights_residual(post_gram_date, POST_GRAM_FORWARD_DAYS) if post_gram else np.zeros_like(fechas_d, float)
-w_postR   = weights_residual(post_selR_date, post_res_dias) if post_selR else np.zeros_like(fechas_d, float)
-
-
-# ========================= FUNCIÓN DE COMBINACIÓN =========================
-def combine_kill(*terms):
-    """
-    Combina efectos de mortalidad independientes:
-    producto de (1 − eficiencia×peso) → 1 − producto acumulado.
-    Ejemplo: combine_kill(0.8*w1, 0.6*w2) = 1 - (1−0.8w1)*(1−0.6w2)
-    """
-    if not terms:
-        return np.zeros_like(fechas_d, float)
-    base = np.ones_like(fechas_d, float)
-    for t in terms:
-        base *= (1.0 - np.clip(t, 0.0, 1.0))
-    return np.clip(1.0 - base, 0.0, 1.0)
-
-
-# ========================= EFICIENCIA COMBINADA POR ESTADO =========================
-# k₁..k₄ representan el kill diario total (0–1) en cada estado fenológico.
-
-k1 = combine_kill(
-    (ef_pre_glifo/100)*w_glifo,
-    (ef_pre_selNR/100)*w_preNR,
-    (ef_preR/100)*w_preR,
-    (ef_preemR/100)*w_preemR,
-    (ef_post_gram/100)*w_postG,
-    (ef_post_selR/100)*w_postR
-)
-
-k2 = combine_kill(
-    (ef_pre_glifo/100)*w_glifo,
-    (ef_pre_selNR/100)*w_preNR,
-    (ef_preR/100)*w_preR,
-    (ef_preemR/100)*w_preemR,
-    (ef_post_selR/100)*w_postR
-)
-
-k3 = combine_kill(
-    (ef_pre_glifo/100)*w_glifo,
-    (ef_pre_selNR/100)*w_preNR,
-    (ef_post_gram/100)*w_postG,
-    (ef_post_selR/100)*w_postR
-)
-
-k4 = combine_kill(
-    (ef_pre_glifo/100)*w_glifo,
-    (ef_pre_selNR/100)*w_preNR,
-    (ef_post_selR/100)*w_postR
-)
-sim = simulate_chained(
-    emerrel_series=df_plot.set_index("fecha")["EMERREL"],
-    one_minus_ciec=one_minus_Ciec,
-    sow_date=sow_date,
-    k1=k1, k2=k2, k3=k3, k4=k4,
-    T1=T1, T2=T2, T3=T3,
-    factor_area_to_plants=factor_area_to_plants
-)
-
-S1_0,S2_0,S3_0,S4_0 = sim["S0"]
-S1c,S2c,S3c,S4c     = sim["S"]
-contrib0 = sim["contrib_0"]
-contribC = sim["contrib_ctl"]
-base_pl_daily = sim["base_pl_daily"]
-mask = sim["mask"]
-
-# Cap diario por A2 y reescalado de componentes (como en versión previa)
-base_pl_daily_cap = cap_cumulative(base_pl_daily, MAX_PLANTS_CAP, mask)
-sup_cap_0   = np.minimum(contrib0, base_pl_daily_cap)
-sup_cap_ctl = np.minimum(contribC, base_pl_daily_cap)
-
-# Reparto proporcional del cap en la versión controlada entre estados
-total_ctl = (W_S["S1"]*S1c + W_S["S2"]*S2c + W_S["S3"]*S3c + W_S["S4"]*S4c)
-eps = 1e-12
-scale = np.where(total_ctl>eps, np.minimum(1.0, sup_cap_ctl/total_ctl), 0.0)
-S1c_cap = W_S["S1"]*S1c*scale; S2c_cap = W_S["S2"]*S2c*scale; S3c_cap = W_S["S3"]*S3c*scale; S4c_cap = W_S["S4"]*S4c*scale
-sup_cap_ctl = S1c_cap + S2c_cap + S3c_cap + S4c_cap  # por consistencia numérica
-
-# Agregación semanal
-df_daily_cap = pd.DataFrame({"fecha": ts, "sin_ctrl": np.where(mask, sup_cap_0, 0.0), "con_ctrl": np.where(mask, sup_cap_ctl, 0.0)})
-df_week = df_daily_cap.set_index("fecha").resample("W-MON").sum().reset_index()
-
-# A2 por AUC
-sup_equiv  = np.divide(sup_cap_0,   factor_area_to_plants, out=np.zeros_like(sup_cap_0),   where=(factor_area_to_plants>0))
-ctl_equiv  = np.divide(sup_cap_ctl, factor_area_to_plants, out=np.zeros_like(sup_cap_ctl), where=(factor_area_to_plants>0))
-auc_sup      = auc_time(ts, sup_equiv, mask=mask)
-auc_sup_ctrl = auc_time(ts, ctl_equiv, mask=mask)
-A2_sup_final  = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP*(auc_sup/auc_cruda)) if auc_cruda>0 else float("nan")
-A2_ctrl_final = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP*(auc_sup_ctrl/auc_cruda)) if auc_cruda>0 else float("nan")
-
-# x2/x3 y pérdidas
-X2 = float(np.nansum(sup_cap_0[mask])); X3 = float(np.nansum(sup_cap_ctl[mask]))
-loss_x2_pct = float(_loss(X2)); loss_x3_pct = float(_loss(X3))
-
-# ========================= TIMELINE (barras horizontales) =========================
+# ================== Timeline de tratamientos ==================
 COLOR_TREAT = {
     "glifo":     "rgba(70, 70, 70, 0.7)",
     "preR":      "rgba(0, 128, 0, 0.7)",
@@ -626,258 +454,106 @@ COLOR_TREAT = {
     "post_gram": "rgba(30, 144, 255, 0.8)",
     "preNR":     "rgba(128, 0, 128, 0.7)"
 }
-LANES = [("glifo", "Glifosato"),
-         ("preNR", "Pre NR"),
-         ("preR", "PreR"),
-         ("preemR", "PreemR"),
-         ("post_gram", "Post grami"),
-         ("postR", "PostR")]
+LANES = [("glifo","Glifosato"),
+         ("preNR","Pre NR"),
+         ("preR","PreR"),
+         ("preemR","PreemR"),
+         ("post_gram","Post grami"),
+         ("postR","PostR")]
 
 def build_manual_intervals():
     out=[]
     if pre_glifo and pre_glifo_date:
-        ini=pd.to_datetime(pre_glifo_date); out.append((ini, ini+pd.Timedelta(days=1), "glifo"))
+        ini = pd.to_datetime(pre_glifo_date); fin = ini + pd.Timedelta(days=1); out.append((ini, fin, "glifo"))
     if pre_selNR and pre_selNR_date:
-        ini=pd.to_datetime(pre_selNR_date); out.append((ini, ini+pd.Timedelta(days=NR_DAYS_DEFAULT), "preNR"))
+        ini = pd.to_datetime(pre_selNR_date); fin = ini + pd.Timedelta(days=NR_DAYS_DEFAULT); out.append((ini, fin, "preNR"))
     if preR and preR_date:
-        ini=pd.to_datetime(preR_date); out.append((ini, ini+pd.Timedelta(days=int(preR_days)), "preR"))
+        ini = pd.to_datetime(preR_date); fin = ini + pd.Timedelta(days=int(preR_days)); out.append((ini, fin, "preR"))
     if preemR and preemR_date:
-        ini=pd.to_datetime(preemR_date); out.append((ini, ini+pd.Timedelta(days=int(preemR_days)), "preemR"))
+        ini = pd.to_datetime(preemR_date); fin = ini + pd.Timedelta(days=int(preemR_days)); out.append((ini, fin, "preemR"))
     if post_gram and post_gram_date:
-        ini=pd.to_datetime(post_gram_date); out.append((ini, ini+pd.Timedelta(days=POST_GRAM_FORWARD_DAYS), "post_gram"))
+        ini = pd.to_datetime(post_gram_date); fin = ini + pd.Timedelta(days=POST_GRAM_FORWARD_DAYS); out.append((ini, fin, "post_gram"))
     if post_selR and post_selR_date:
-        ini=pd.to_datetime(post_selR_date); out.append((ini, ini+pd.Timedelta(days=int(post_res_dias)), "postR"))
+        ini = pd.to_datetime(post_selR_date); fin = ini + pd.Timedelta(days=int(post_res_dias)); out.append((ini, fin, "postR"))
     return out
 
 def add_timeline(fig: go.Figure, intervals, lanes=LANES, band_height=0.16, gap=0.005):
-    # banda inferior: y en [0 - band_height, 0]
     y0_band = -band_height
     lane_height = (band_height - gap*(len(lanes)+1)) / max(1, len(lanes))
-    lane_pos = {}
-    for i, (k, label) in enumerate(lanes):
+    lane_pos={}
+    for i,(k,label) in enumerate(lanes):
         y0 = y0_band + gap*(i+1) + lane_height*i
         y1 = y0 + lane_height
-        lane_pos[k] = (y0, y1)
+        lane_pos[k]=(y0,y1)
         fig.add_annotation(xref="paper", yref="paper", x=0.002, y=(y0+y1)/2,
                            text=label, showarrow=False, font=dict(size=10),
                            align="left", bgcolor="rgba(255,255,255,0.6)")
-    for (ini, fin, kind) in intervals:
+    for (ini,fin,kind) in intervals:
         if kind not in lane_pos: continue
-        y0, y1 = lane_pos[kind]
+        y0,y1 = lane_pos[kind]
         fig.add_shape(type="rect", xref="x", yref="paper", x0=ini, x1=fin, y0=y0, y1=y1,
                       line=dict(width=0), fillcolor=COLOR_TREAT.get(kind, "rgba(120,120,120,0.7)"))
     fig.add_shape(type="rect", xref="paper", yref="paper", x0=0, x1=1, y0=y0_band, y1=0,
                   line=dict(color="rgba(0,0,0,0.15)", width=1), fillcolor="rgba(0,0,0,0)")
 
-# ========================= GRÁFICO PRINCIPAL =========================
+# ================== Gráfico principal ==================
+st.subheader(f"📊 Gráfico: EMERREL + aportes (cap A2={int(MAX_PLANTS_CAP)}) — Semanal (W-MON)")
+
 with st.sidebar:
     st.header("Opciones visuales")
     show_plants_axis = st.checkbox("Mostrar Plantas·m²·sem⁻¹ (eje derecho)", value=True)
     show_ciec_curve  = st.checkbox("Mostrar curva Ciec (0–1)", value=True)
-    show_timeline    = st.checkbox("Mostrar timeline de tratamientos (abajo)", value=True)
-
-st.subheader(f"📊 EMERREL + aportes (cap A2={int(MAX_PLANTS_CAP)}) — Serie semanal (W-MON)")
+    show_timeline    = st.checkbox("Mostrar timeline (abajo)", value=True)
 
 fig = go.Figure()
-fig.add_trace(go.Scatter(x=ts, y=df_plot["EMERREL"], mode="lines", name="EMERREL (cruda)"))
-layout_kwargs = dict(
-    margin=dict(l=10, r=10, t=40, b=50),
-    title=f"EMERREL (izq) y Plantas·m²·semana (der, 0–100) · Tope={int(MAX_PLANTS_CAP)}",
-    xaxis_title="Tiempo", yaxis_title="EMERREL"
-)
+fig.add_trace(go.Scatter(x=ts, y=df_plot["EMERREL"], mode="lines", name="EMERREL (cruda)",
+                         line=dict(width=2, color="darkgray")))
+
+layout_kwargs = dict(margin=dict(l=10, r=10, t=40, b=50),
+                     title=f"EMERREL (izq) y Plantas·m²·semana (der, 0–100) · Tope={int(MAX_PLANTS_CAP)}",
+                     xaxis_title="Tiempo", yaxis_title="EMERREL")
 
 if show_plants_axis:
-    fig.add_trace(go.Scatter(x=df_week["fecha"], y=df_week["sin_ctrl"], name="Aporte semanal (sin control, cap)", yaxis="y2", mode="lines+markers"))
-    fig.add_trace(go.Scatter(x=df_week["fecha"], y=df_week["con_ctrl"], name="Aporte semanal (con control, cap)", yaxis="y2", mode="lines+markers", line=dict(dash="dot")))
-    layout_kwargs["yaxis2"] = dict(overlaying="y", side="right", title=f"Plantas·m²·sem⁻¹ (cap A2={int(MAX_PLANTS_CAP)})",
-                                   position=1.0, range=[0,100], tick0=0, dtick=20, showgrid=False)
+    fig.add_trace(go.Scatter(x=df_week["fecha"], y=df_week["sin_ctrl"], mode="lines+markers",
+                             name="Aporte semanal (sin control)", yaxis="y2"))
+    fig.add_trace(go.Scatter(x=df_week["fecha"], y=df_week["con_ctrl"], mode="lines+markers",
+                             name="Aporte semanal (con control)", yaxis="y2", line=dict(dash="dot")))
+    layout_kwargs["yaxis2"] = dict(overlaying="y", side="right",
+                                   title=f"Plantas·m²·sem⁻¹ (cap A2={int(MAX_PLANTS_CAP)})",
+                                   position=1.0, range=[0, 100], tick0=0, dtick=20, showgrid=False)
 
 if show_ciec_curve:
-    fig.add_trace(go.Scatter(x=ts, y=1.0-one_minus_Ciec, mode="lines", name="Ciec", yaxis="y3"))
+    fig.add_trace(go.Scatter(x=df_ciec["fecha"], y=df_ciec["Ciec"], mode="lines",
+                             name="Ciec", yaxis="y3"))
     fig.update_layout(yaxis3=dict(overlaying="y", side="right", title="Ciec (0–1)", position=0.97, range=[0,1]))
 
 if show_timeline:
-    add_timeline(fig, build_manual_intervals(), lanes=LANES, band_height=0.16)
+    intervals = build_manual_intervals()
+    add_timeline(fig, intervals, lanes=LANES, band_height=0.16)
 
 fig.update_layout(**layout_kwargs)
 st.plotly_chart(fig, use_container_width=True)
-st.caption(conv_caption + f" · A2_sup={A2_sup_final:.1f} · A2_ctrl={A2_ctrl_final:.1f}")
 
-# ========================= PANEL x y A2 =========================
-st.subheader(f"Densidad efectiva (x) y A2 (por AUC, cap={int(MAX_PLANTS_CAP)})")
+st.caption(conv_caption + f" · A2_sup={A2_sup_final if np.isfinite(A2_sup_final) else float('nan'):.1f} · A2_ctrl={A2_ctrl_final if np.isfinite(A2_ctrl_final) else float('nan'):.1f}")
+
+# ================== Panel numérico ==================
+st.subheader(f"Densidad efectiva (x) y A2 (cap={int(MAX_PLANTS_CAP)})")
 st.markdown(
     f"""
 **x₂ — Sin control (cap):** **{X2:,.1f}** pl·m²  
 **x₃ — Con control (cap):** **{X3:,.1f}** pl·m²  
-**A2 (sup, cap):** **{A2_sup_final:.1f}** pl·m²  
-**A2 (ctrl, cap):** **{A2_ctrl_final:.1f}** pl·m²  
+**A2 (sup, cap):** **{A2_sup_final if np.isfinite(A2_sup_final) else float('nan'):.1f}** pl·m²  
+**A2 (ctrl, cap):** **{A2_ctrl_final if np.isfinite(A2_ctrl_final) else float('nan'):.1f}** pl·m²  
 **Pérdida(x₂):** {loss_x2_pct:.2f}% · **Pérdida(x₃):** {loss_x3_pct:.2f}%
 """
 )
 
-# ========================= OPTIMIZACIÓN (LIVIANA) =========================
-st.markdown("---")
-st.header("🧠 Optimización (búsqueda aleatoria)")
-
-with st.sidebar:
-    st.header("Optimización")
-    sow_search_from = st.date_input("Buscar siembra desde", value=sow_min, min_value=sow_min, max_value=sow_max, key="sow_from")
-    sow_search_to   = st.date_input("Buscar siembra hasta",  value=sow_max, min_value=sow_min, max_value=sow_max, key="sow_to")
-    sow_step_days   = st.number_input("Paso de siembra (días)", 1, 30, 7, 1)
-
-    use_preR_opt     = st.checkbox("Incluir presiembra + residual (≤ siembra−14; S1–S2)", value=True)
-    use_preemR_opt   = st.checkbox("Incluir preemergente + residual (siembra..siembra+10; S1–S2)", value=True)
-    use_post_selR_opt= st.checkbox("Incluir post + residual (≥ siembra + 20; S1–S4)", value=True)
-    use_post_gram_opt= st.checkbox(f"Incluir graminicida post (+{POST_GRAM_FORWARD_DAYS-1}d; S1–S3)", value=True)
-
-    ef_preR_opt     = st.slider("Eficiencia presiembraR (%)", 0, 100, 70, 1)   if use_preR_opt else 0
-    ef_preemR_opt   = st.slider("Eficiencia preemergenteR (%)", 0, 100, 70, 1) if use_preemR_opt else 0
-    ef_post_selR_opt= st.slider("Eficiencia post residual (%)", 0, 100, 70, 1) if use_post_selR_opt else 0
-    ef_post_gram_opt= st.slider("Eficiencia graminicida post (%)", 0, 100, 65, 1) if use_post_gram_opt else 0
-
-    preR_min_back  = st.number_input("PresiembraR: buscar hasta X días antes", 14, 120, 45, 1)
-    preR_step_days = st.number_input("Paso fechas PRESIEMBRA (días)", 1, 30, 7, 1)
-    preem_step_days= st.number_input("Paso fechas PREEMERGENTE (días)", 1, 10, 3, 1)
-    post_days_fw   = st.number_input("Post: días después de siembra (máximo)", 20, 180, 60, 1)
-    post_step_days = st.number_input("Paso fechas POST (días)", 1, 30, 7, 1)
-
-    res_min, res_max = st.slider("Residualidad (min–max) [días]", min_value=15, max_value=120, value=(30, 60), step=5)
-    res_step = st.number_input("Paso de residualidad (días)", min_value=1, max_value=30, value=5, step=1)
-
-    max_evals   = st.number_input("Máx. evaluaciones aleatorias", 100, 50000, 2000, 100)
-
-def daterange(start_date, end_date, step_days):
-    cur=pd.to_datetime(start_date); end=pd.to_datetime(end_date)
-    while cur<=end:
-        yield cur
-        cur=cur+pd.Timedelta(days=int(step_days))
-
-sow_candidates = list(daterange(sow_search_from, sow_search_to, sow_step_days))
-def pre_sow_dates(sd):
-    start = pd.to_datetime(sd) - pd.Timedelta(days=int(preR_min_back))
-    end   = pd.to_datetime(sd) - pd.Timedelta(days=PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW)
-    if end < start: return []
-    cur, out = start, []
-    while cur <= end:
-        out.append(cur)
-        cur = cur + pd.Timedelta(days=int(preR_step_days))
-    return out
-
-def preem_dates(sd):
-    start = pd.to_datetime(sd)
-    end   = pd.to_datetime(sd) + pd.Timedelta(days=PREEM_R_MAX_AFTER_SOW_DAYS)
-    cur, out = start, []
-    while cur <= end:
-        out.append(cur)
-        cur = cur + pd.Timedelta(days=int(preem_step_days))
-    return out
-
-def post_dates(sd):
-    start = pd.to_datetime(sd) + pd.Timedelta(days=20)
-    end   = pd.to_datetime(sd) + pd.Timedelta(days=int(post_days_fw))
-    if end < start: return []
-    cur, out = start, []
-    while cur <= end:
-        out.append(cur)
-        cur = cur + pd.Timedelta(days=int(post_step_days))
-    return out
-
-res_days = list(range(int(res_min), int(res_max) + 1, int(res_step)))
-if int(res_max) not in res_days: res_days.append(int(res_max))
-
-def sample_random_scenario():
-    sd = random.choice(sow_candidates)
-    schedule = []
-    if use_preR_opt and random.random()<0.7:
-        cand = pre_sow_dates(sd)
-        if cand: schedule.append(("preR", random.choice(cand), random.choice(res_days), ef_preR_opt))
-    if use_preemR_opt and random.random()<0.7:
-        cand = preem_dates(sd)
-        if cand: schedule.append(("preemR", random.choice(cand), random.choice(res_days), ef_preemR_opt))
-    if use_post_selR_opt and random.random()<0.7:
-        cand = post_dates(sd)
-        if cand: schedule.append(("postR", random.choice(cand), random.choice(res_days), ef_post_selR_opt))
-    if use_post_gram_opt and random.random()<0.7:
-        cand = post_dates(sd)
-        if cand: schedule.append(("post_gram", random.choice(cand), POST_GRAM_FORWARD_DAYS, ef_post_gram_opt))
-    return (pd.to_datetime(sd).date(), schedule)
-
-def evaluate_scenario(sd, schedule):
-    # Reglas duras
-    sow = pd.to_datetime(sd)
-    sow_plus_20 = sow + pd.Timedelta(days=20)
-    for kind, datev, days, eff in schedule:
-        d = pd.to_datetime(datev)
-        if kind == "postR" and d < sow_plus_20: return None
-        if kind == "preR" and d > (sow - pd.Timedelta(days=PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW)): return None
-        if kind == "preemR" and (d < sow or d > (sow + pd.Timedelta(days=PREEM_R_MAX_AFTER_SOW_DAYS))): return None
-
-    # construir kill arrays
-    w_gl = weights_one_day(datev) if any(k=="glifo" for k,_,_,_ in schedule) else np.zeros_like(fechas_d, float)
-    # (no usamos glifo en aleatoria para simplificar)
-    w_preNRo=np.zeros_like(fechas_d,float)
-    w_preRo = np.zeros_like(fechas_d,float)
-    w_preEo = np.zeros_like(fechas_d,float)
-    w_postGo= np.zeros_like(fechas_d,float)
-    w_postRo= np.zeros_like(fechas_d,float)
-    ef_preNRo=0
-
-    for kind, datev, days, eff in schedule:
-        if kind=="preR":   w_preRo  += weights_residual(datev, days)
-        if kind=="preemR": w_preEo  += weights_residual(datev, days)
-        if kind=="post_gram": w_postGo += weights_residual(datev, days)
-        if kind=="postR":  w_postRo += weights_residual(datev, days)
-
-    k1l = combine_kill(ef_preNRo/100*w_preNRo, eff/100*w_preRo, eff/100*w_preEo, ef_post_gram_opt/100*w_postGo, ef_post_selR_opt/100*w_postRo)
-    k2l = combine_kill(ef_preNRo/100*w_preNRo, eff/100*w_preRo, eff/100*w_preEo,                             ef_post_selR_opt/100*w_postRo)
-    k3l = combine_kill(ef_preNRo/100*w_preNRo,                                          ef_post_gram_opt/100*w_postGo, ef_post_selR_opt/100*w_postRo)
-    k4l = combine_kill(ef_preNRo/100*w_preNRo,                                                                     ef_post_selR_opt/100*w_postRo)
-
-    siml = simulate_chained(df_plot.set_index("fecha")["EMERREL"], one_minus_Ciec, sd, k1l, k2l, k3l, k4l, T1,T2,T3, factor_area_to_plants)
-    sup0 = np.minimum(siml["contrib_0"], cap_cumulative(siml["base_pl_daily"], MAX_PLANTS_CAP, siml["mask"]))
-    supc = np.minimum(siml["contrib_ctl"], cap_cumulative(siml["base_pl_daily"], MAX_PLANTS_CAP, siml["mask"]))
-    X2l = float(np.nansum(sup0[siml["mask"]])); X3l=float(np.nansum(supc[siml["mask"]]))
-    return {"sow": sd, "x2": X2l, "x3": X3l, "loss_pct": float(_loss(X3l)), "schedule": schedule}
-
-c1, c2 = st.columns(2)
-with c1:
-    start_opt = st.button("▶️ Ejecutar optimización", use_container_width=True)
-with c2:
-    top_k = st.number_input("Top-k a mostrar", 1, 20, 5, 1)
-
-if start_opt:
-    results=[]
-    prog = st.progress(0.0)
-    for i in range(1, int(max_evals)+1):
-        sd, sch = sample_random_scenario()
-        r = evaluate_scenario(sd, sch)
-        if r is not None: results.append(r)
-        if i % max(1, int(max_evals)//100) == 0 or i==int(max_evals):
-            prog.progress(min(1.0, i/int(max_evals)))
-    if not results:
-        st.warning("No se encontraron escenarios válidos con los parámetros actuales.")
-    else:
-        results_sorted = sorted(results, key=lambda r: (r["loss_pct"], r["x3"]))[:int(top_k)]
-        st.subheader("🏆 Mejores escenarios (aleatorio)")
-        for j, r in enumerate(results_sorted, 1):
-            st.markdown(f"**#{j}** — Siembra: **{r['sow']}** · Pérdida: **{r['loss_pct']:.2f}%** · x₂={r['x2']:.1f} · x₃={r['x3']:.1f}")
-        # descargar top-k
-        df_best = pd.DataFrame([{
-            "rank": j,
-            "sow": r["sow"],
-            "loss_pct": r["loss_pct"],
-            "x2": r["x2"], "x3": r["x3"],
-            "schedule": "; ".join([f"{k}@{pd.to_datetime(d).date()}+{int(dd)}d({int(eff)}%)" for (k,d,dd,eff) in r["schedule"]])
-        } for j,r in enumerate(results_sorted,1)])
-        st.download_button("Descargar top-k (CSV)", df_best.to_csv(index=False).encode("utf-8"),
-                           "mejores_escenarios.csv", "text/csv")
-
-# ========================= PARÁMETROS CALIBRADOS (INFO) =========================
+# ================== Parámetros (lectura) ==================
 with st.expander("Parámetros calibrados (solo lectura)", expanded=False):
     st.markdown(
-        f"- **w₁..w₄** = {W_S['S1']}, {W_S['S2']}, {W_S['S3']}, {W_S['S4']}  \n"
-        f"- **α** = {ALPHA} · **Lmax** = {LMAX}  \n"
-        f"- **loss(x) = α·x / (1 + α·x/Lmax)**  \n"
-        f"- **T₁,T₂,T₃** = {T1},{T2},{T3} días"
+        f"""
+- **w₁..w₄** = {W_S['S1']}, {W_S['S2']}, {W_S['S3']}, {W_S['S4']}  
+- **α** = {ALPHA} · **Lmax** = {LMAX}  
+- **loss(x) = α·x / (1 + α·x/Lmax)**
+"""
     )
-
