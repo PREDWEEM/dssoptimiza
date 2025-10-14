@@ -32,42 +32,68 @@ st.title("🌱 PREDWEEM — Modelo encadenado S1–S4 con ventanas de control")
 
 # ------------------ carga de datos ------------------
 st.sidebar.header("📂 Datos de entrada")
-up = st.sidebar.file_uploader("CSV con columnas (fecha, EMERREL / EMERAC)", type=["csv"])
+up = st.sidebar.file_uploader("Archivo CSV o Excel con columnas (fecha, EMERREL / EMERAC)", type=["csv", "xlsx", "xls"])
 if up is None:
-    st.info("Subí un archivo CSV para comenzar.")
+    st.info("Subí un archivo CSV o Excel para comenzar.")
     st.stop()
 
 dayfirst   = st.sidebar.checkbox("Fecha en formato dd/mm/aaaa", value=True)
 is_percent = st.sidebar.checkbox("Valores en % (no 0–1)", value=True)
 is_cum     = st.sidebar.checkbox("La serie es acumulada (EMERAC)", value=False)
 
-df0 = pd.read_csv(up)
-df0.columns = [c.strip().lower() for c in df0.columns]
-# heurística de nombres
-c_fecha = "fecha" if "fecha" in df0.columns else df0.columns[0]
-c_valor = "emerrel" if "emerrel" in df0.columns else ( "emerac" if "emerac" in df0.columns else df0.columns[1] )
+# === LECTURA SEGURA ===
+import chardet, io
 
-# parse
+# Detecta tipo de archivo
+if up.name.lower().endswith((".xlsx", ".xls")):
+    df0 = pd.read_excel(up)
+else:
+    raw_bytes = up.read()
+    # Detecta codificación probable
+    enc_guess = chardet.detect(raw_bytes)["encoding"] or "utf-8"
+    raw_text = raw_bytes.decode(enc_guess, errors="replace")
+
+    # Intenta detección automática de separador
+    try:
+        df0 = pd.read_csv(io.StringIO(raw_text), sep=None, engine="python")
+    except Exception:
+        # fallback común para CSV exportados desde Excel en español
+        df0 = pd.read_csv(io.StringIO(raw_text), sep=";", engine="python")
+
+# === Limpieza de columnas ===
+df0.columns = [str(c).strip().lower() for c in df0.columns]
+
+# Detección heurística de columnas
+c_fecha = next((c for c in df0.columns if "fec" in c), df0.columns[0])
+c_valor = next((c for c in df0.columns if "emer" in c), df0.columns[1] if len(df0.columns) > 1 else df0.columns[0])
+
+# Parseo y ordenamiento
 df0["fecha"] = pd.to_datetime(df0[c_fecha], dayfirst=dayfirst, errors="coerce")
 vals = pd.to_numeric(df0[c_valor], errors="coerce")
 df = pd.DataFrame({"fecha": df0["fecha"], "valor": vals}).dropna().sort_values("fecha").reset_index(drop=True)
+
 if df.empty:
-    st.error("No quedaron filas válidas tras el parseo.")
+    st.error("⚠️ No se encontraron datos válidos después de procesar el archivo.")
     st.stop()
 
-# completar diario
+# === Reindexación diaria ===
 idx = pd.date_range(df["fecha"].min(), df["fecha"].max(), freq="D")
-s   = df.set_index("fecha")["valor"].reindex(idx)
-s   = s.fillna(method="ffill") if is_cum else s.fillna(0.0)
+serie = df.set_index("fecha")["valor"].reindex(idx)
 
-# derivar EMERREL si venía acumulada
-emerrel = s.diff().fillna(0.0).clip(lower=0.0) if is_cum else s.astype(float)
+# Si es acumulada, derivar emergencias diarias
+if is_cum:
+    serie = serie.diff().fillna(0.0).clip(lower=0.0)
+else:
+    serie = serie.fillna(0.0)
+
+# Si está en %, convertir a proporción diaria
 if is_percent:
-    emerrel = emerrel / 100.0  # pasa a proporción diaria
-emerrel = emerrel.clip(lower=0.0)
+    serie = serie / 100.0
 
-df_daily = pd.DataFrame({"fecha": idx, "EMERREL": emerrel.values})
-st.success(f"Serie diaria lista: {len(df_daily)} días ({df_daily['fecha'].min().date()} → {df_daily['fecha'].max().date()})")
+serie = serie.clip(lower=0.0)
+df_daily = pd.DataFrame({"fecha": idx, "EMERREL": serie.values})
+
+st.success(f"✅ Archivo leído correctamente ({len(df_daily)} días entre {df_daily['fecha'].min().date()} y {df_daily['fecha'].max().date()}).")
 
 # ------------------ tope A2 y siembra ------------------
 st.sidebar.header("🌾 Escenario y siembra")
