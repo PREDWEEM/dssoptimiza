@@ -1,24 +1,16 @@
 # -*- coding: utf-8 -*-
 # PREDWEEM — Simulador calibrado + Optimización de escenarios
-# Mejora: "timeline" de tratamientos debajo del gráfico de EMERREL
-# y marca de solapamientos con etiqueta ⚠️ Overlapping.
-#
-# Parámetros calibrados (fijos/ocultos):
-# - Pesos por estado (S1..S4): w1=0.369, w2=0.393, w3=1.150, w4=1.769
-# - Función pérdida hiperbólica: loss(x) = α*x / (1 + (α*x/Lmax)), con α=0.503, Lmax=125.91
-# - Tope A2: 250 / 125 / 62 pl·m² (seleccionable)
-#
-# Reglas:
-# - Presiembra residual (preR): SOLO <= siembra−14 (no en [-13..0]), actúa S1–S2
-# - Preemergente residual (preemR): [siembra..siembra+10], actúa S1–S2
-# - Post residual (postR): >= siembra+20, actúa S1–S4
-# - Graminicida post: ventana día 0..+10, actúa S1–S3
+# - Ventanas de tratamientos visualizadas como barras horizontales (timeline) SIN etiquetas "Overlapping".
+# - El timeline aparece como un subpanel inferior del gráfico del "Mejor escenario".
+# - Colores de tratamientos:
+#     glifosato (gris), preNR (violeta), preR (verde), preemR (verde claro), postR (naranja), post_gram (azul).
 
 import io, re, math, datetime as dt
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 from datetime import timedelta
@@ -30,7 +22,6 @@ LMAX  = 125.91
 W_S   = {"S1": 0.369, "S2": 0.393, "S3": 1.150, "S4": 1.769}  # pesos por estado
 
 def _loss(x):
-    """Pérdida (%) en función de x (pl·m²) con los parámetros calibrados."""
     x = np.asarray(x, dtype=float)
     return ALPHA * x / (1.0 + (ALPHA * x / LMAX))
 
@@ -65,22 +56,16 @@ def read_raw_from_url(url: str) -> bytes:
     with urlopen(req, timeout=30) as r: return r.read()
 
 def read_raw(up, url):
-    if up is not None:
-        b = up.read()
-        # si es Excel, devolvemos bytes tal cual; si es texto, convertimos a bytes
-        return b if isinstance(b, (bytes, bytearray)) else str(b).encode("utf-8", errors="ignore")
-    if url:
-        return read_raw_from_url(url)
+    if up is not None: return up.read()
+    if url: return read_raw_from_url(url)
     raise ValueError("No hay fuente de datos.")
 
-def parse_csv(raw, sep_opt, dec_opt, encoding="utf-8", on_bad="warn"):
-    # raw debe ser bytes
-    head_bytes = raw[:8000] if isinstance(raw, (bytes, bytearray)) else str(raw).encode("utf-8", errors="ignore")[:8000]
-    head = head_bytes.decode("utf-8", errors="ignore")
+def parse_csv(raw, sep_opt, dec_opt, encoding="utf-8", on_bad="skip"):
+    # on_bad="skip" para evitar ParserError por líneas corruptas
+    head = raw[:8000].decode("utf-8", errors="ignore")
     sep_guess, dec_guess = sniff_sep_dec(head)
     sep = sep_guess if sep_opt == "auto" else ("," if sep_opt=="," else (";" if sep_opt==";" else "\t"))
     dec = dec_guess if dec_opt == "auto" else dec_opt
-    # engine="python" + on_bad_lines para mayor robustez
     df = pd.read_csv(io.BytesIO(raw), sep=sep, decimal=dec, engine="python", on_bad_lines=on_bad)
     return df, {"sep": sep, "dec": dec, "enc": encoding}
 
@@ -270,7 +255,6 @@ S2_coh = roll_sum_shift(births_series, 21, 7).fillna(0.0)
 S3_coh = roll_sum_shift(births_series, 32, 28).fillna(0.0)
 S4_coh = births_series.cumsum().shift(60).fillna(0.0)
 
-# usar pesos calibrados
 S1_arr = S1_coh.reindex(ts).to_numpy(float)
 S2_arr = S2_coh.reindex(ts).to_numpy(float)
 S3_arr = S3_coh.reindex(ts).to_numpy(float)
@@ -356,7 +340,7 @@ if post_selR and post_selR_date and post_selR_date < sow_date + timedelta(days=2
     warnings.append(f"Selectivo + residual (post): debe ser ≥ {sow_date + timedelta(days=20)}.")
 for w in warnings: st.warning(w)
 
-# cronograma legible en UI (sidebar)
+# cronograma legible en UI
 if pre_glifo: add_sched("Pre · glifosato (NSr, 1d)", pre_glifo_date, None, "Barbecho")
 if pre_selNR: add_sched("Pre · selectivo no residual (NR)", pre_selNR_date, NR_DAYS_DEFAULT, f"NR {NR_DAYS_DEFAULT}d")
 if preR:      add_sched("Pre-SIEMBRA · selectivo + residual", preR_date, preR_days, f"Protege {preR_days}d (solo S1–S2)")
@@ -421,7 +405,6 @@ if factor_area_to_plants is not None:
     S1_pl = np.where(ms, S1_pl, 0.0); S2_pl = np.where(ms, S2_pl, 0.0)
     S3_pl = np.where(ms, S3_pl, 0.0); S4_pl = np.where(ms, S4_pl, 0.0)
 
-    # factores de control por estado
     ctrl_S1 = np.ones_like(fechas_d, float); ctrl_S2 = np.ones_like(fechas_d, float)
     ctrl_S3 = np.ones_like(fechas_d, float); ctrl_S4 = np.ones_like(fechas_d, float)
 
@@ -433,7 +416,7 @@ if factor_area_to_plants is not None:
         if "S3" in states_sel: np.multiply(ctrl_S3, reduc, out=ctrl_S3)
         if "S4" in states_sel: np.multiply(ctrl_S4, reduc, out=ctrl_S4)
 
-    # Aplicación manual (reglas nuevas):
+    # Aplicación manual (reglas)
     if preR:     apply_efficiency_per_state(weights_residual(preR_date, preR_days), ef_preR, ["S1","S2"])
     if preemR:   apply_efficiency_per_state(weights_residual(preemR_date, preemR_days), ef_preemR, ["S1","S2"])
     if pre_selNR:apply_efficiency_per_state(weights_residual(pre_selNR_date, NR_DAYS_DEFAULT), ef_pre_selNR, ["S1","S2","S3","S4"])
@@ -502,123 +485,11 @@ if factor_area_to_plants is not None:
 else:
     X2 = X3 = float("nan"); loss_x2_pct = loss_x3_pct = float("nan")
 
-# ===== Colores y “lanes” para timeline =====
-COLOR_TREAT = {
-    "glifo":     "rgba(70, 70, 70, 0.7)",     # gris
-    "preR":      "rgba(0, 128, 0, 0.7)",      # verde
-    "preemR":    "rgba(0, 180, 0, 0.7)",      # verde claro
-    "postR":     "rgba(255, 140, 0, 0.8)",    # naranja
-    "post_gram": "rgba(30, 144, 255, 0.8)",   # azul
-    "preNR":     "rgba(128, 0, 128, 0.7)"     # violeta (selectivo NR)
-}
-LANES = [("glifo", "Glifosato"),
-         ("preNR", "Pre NR"),
-         ("preR", "PreR"),
-         ("preemR", "PreemR"),
-         ("post_gram", "Post grami"),
-         ("postR", "PostR")]
-
-def build_manual_intervals():
-    """Devuelve lista de tuplas (ini_ts, fin_ts, key) para timeline manual."""
-    out = []
-    if pre_glifo and pre_glifo_date:
-        ini = pd.to_datetime(pre_glifo_date); fin = ini + pd.Timedelta(days=1)
-        out.append((ini, fin, "glifo"))
-    if pre_selNR and pre_selNR_date:
-        ini = pd.to_datetime(pre_selNR_date); fin = ini + pd.Timedelta(days=NR_DAYS_DEFAULT)
-        out.append((ini, fin, "preNR"))
-    if preR and preR_date:
-        ini = pd.to_datetime(preR_date); fin = ini + pd.Timedelta(days=int(preR_days))
-        out.append((ini, fin, "preR"))
-    if preemR and preemR_date:
-        ini = pd.to_datetime(preemR_date); fin = ini + pd.Timedelta(days=int(preemR_days))
-        out.append((ini, fin, "preemR"))
-    if post_gram and post_gram_date:
-        ini = pd.to_datetime(post_gram_date); fin = ini + pd.Timedelta(days=POST_GRAM_FORWARD_DAYS)
-        out.append((ini, fin, "post_gram"))
-    if post_selR and post_selR_date:
-        ini = pd.to_datetime(post_selR_date); fin = ini + pd.Timedelta(days=int(post_res_dias))
-        out.append((ini, fin, "postR"))
-    return out
-
-def add_timeline(fig: go.Figure, intervals, lanes=LANES, band_height=0.13, gap=0.005,
-                 overlap_label="⚠️ Overlapping"):
-    """
-    Dibuja barras horizontales (timeline) en la parte inferior del gráfico (yref='paper').
-    band_height ~ altura total de la banda inferior (0-1 en coordenadas 'paper').
-    """
-    # banda inferior: y en [0 - band_height, 0]
-    y0_band = -band_height
-    lane_height = (band_height - gap*(len(lanes)+1)) / max(1, len(lanes))
-    lane_pos = {}
-    for i, (k, _) in enumerate(lanes):
-        # cada carril con su caja vertical
-        y0 = y0_band + gap*(i+1) + lane_height*i
-        y1 = y0 + lane_height
-        lane_pos[k] = (y0, y1)
-
-        # etiqueta del carril
-        fig.add_annotation(
-            xref="paper", yref="paper",
-            x=0.002, y=(y0+y1)/2,
-            text=lanes[i][1],
-            showarrow=False, font=dict(size=10),
-            align="left", bgcolor="rgba(255,255,255,0.6)")
-    # barras por intervalo
-    for (ini, fin, kind) in intervals:
-        if kind not in lane_pos: continue
-        y0, y1 = lane_pos[kind]
-        fig.add_shape(
-            type="rect", xref="x", yref="paper",
-            x0=ini, x1=fin, y0=y0, y1=y1,
-            line=dict(width=0),
-            fillcolor=COLOR_TREAT.get(kind, "rgba(120,120,120,0.7)")
-        )
-
-    # detectar solapamientos (entre cualquier par) y etiquetar una sola vez por segmento
-    overlaps = []
-    for i in range(len(intervals)):
-        for j in range(i+1, len(intervals)):
-            ini_i, fin_i, _ = intervals[i]
-            ini_j, fin_j, _ = intervals[j]
-            o_ini = max(ini_i, ini_j)
-            o_fin = min(fin_i, fin_j)
-            if o_ini < o_fin:
-                overlaps.append((o_ini, o_fin))
-    # fusionar solapamientos contiguos para no saturar etiquetas
-    if overlaps:
-        overlaps.sort(key=lambda x: x[0])
-        merged = [overlaps[0]]
-        for (a,b) in overlaps[1:]:
-            la, lb = merged[-1]
-            if a <= lb:
-                merged[-1] = (la, max(lb, b))
-            else:
-                merged.append((a,b))
-        # etiquetar
-        for (a,b) in merged:
-            x_mid = a + (b - a)/2
-            fig.add_annotation(
-                x=x_mid, xref="x",
-                y=y0_band + band_height/2, yref="paper",
-                text=overlap_label,
-                showarrow=False,
-                font=dict(size=11, color="black"),
-                bgcolor="rgba(255,215,0,0.85)"  # amarillo
-            )
-
-    # marco tenue de la banda
-    fig.add_shape(
-        type="rect", xref="paper", yref="paper",
-        x0=0, x1=1, y0=y0_band, y1=0,
-        line=dict(color="rgba(0,0,0,0.15)", width=1), fillcolor="rgba(0,0,0,0)"
-    )
-
-# ===== Gráfico 1 =====
+# ===== Gráfico 1 (general) =====
 st.subheader(f"📊 Gráfico 1: EMERREL + aportes (cap A2={int(MAX_PLANTS_CAP)}) — Serie semanal (W-MON)")
 fig = go.Figure()
 fig.add_trace(go.Scatter(x=ts, y=df_plot["EMERREL"], mode="lines", name="EMERREL (cruda)"))
-layout_kwargs = dict(margin=dict(l=10, r=10, t=40, b=50),
+layout_kwargs = dict(margin=dict(l=10, r=10, t=40, b=10),
                      title=f"EMERREL (izq) y Plantas·m²·semana (der, 0–100) · Tope={int(MAX_PLANTS_CAP)}",
                      xaxis_title="Tiempo", yaxis_title="EMERREL")
 
@@ -626,7 +497,6 @@ with st.sidebar:
     st.header("Opciones visuales")
     show_plants_axis = st.checkbox("Mostrar Plantas·m²·sem⁻¹ (eje derecho)", value=True)
     show_ciec_curve = st.checkbox("Mostrar curva Ciec (0–1)", value=True)
-    show_timeline = st.checkbox("Mostrar timeline de tratamientos (abajo)", value=True)
 
 if factor_area_to_plants is not None and show_plants_axis:
     layout_kwargs["yaxis2"] = dict(overlaying="y", side="right",
@@ -637,11 +507,6 @@ if factor_area_to_plants is not None and show_plants_axis:
 if show_ciec_curve:
     fig.update_layout(yaxis3=dict(overlaying="y", side="right", title="Ciec (0–1)", position=0.97, range=[0, 1]))
     fig.add_trace(go.Scatter(x=df_ciec["fecha"], y=df_ciec["Ciec"], mode="lines", name="Ciec", yaxis="y3"))
-
-# timeline de tratamientos (manual)
-if show_timeline:
-    manual_intervals = build_manual_intervals()
-    add_timeline(fig, manual_intervals, lanes=LANES, band_height=0.16)
 
 fig.update_layout(**layout_kwargs)
 st.plotly_chart(fig, use_container_width=True)
@@ -681,9 +546,7 @@ with st.sidebar:
 
     preR_min_back  = st.number_input("PresiembraR: buscar hasta X días antes de siembra", 14, 120, 45, 1)
     preR_step_days = st.number_input("Paso fechas PRESIEMBRA (días)", 1, 30, 7, 1)
-
     preem_step_days = st.number_input("Paso fechas PREEMERGENTE (días)", 1, 10, 3, 1)
-
     post_days_fw   = st.number_input("Post: días después de siembra (máximo)", 20, 180, 60, 1)
     post_step_days = st.number_input("Paso fechas POST (días)", 1, 30, 7, 1)
 
@@ -1004,7 +867,6 @@ def recompute_apply_best(best):
         if "S3" in states: np.multiply(c3, reduc, out=c3)
         if "S4" in states: np.multiply(c4, reduc, out=c4)
 
-    # aplicar schedule
     for a in best["schedule"]:
         ini = pd.to_datetime(a["date"]).date()
         fin = (pd.to_datetime(a["date"]) + pd.Timedelta(days=int(a["days"]))).date()
@@ -1037,6 +899,47 @@ def recompute_apply_best(best):
         "factor_area": factor_area,
         "sup_cap_b": sup_cap_b
     }
+
+# =================== Colores y helpers del TIMELINE ===================
+COLOR_TREAT = {
+    "glifo":     "rgba(120,120,120,0.70)",  # gris
+    "preNR":     "rgba(148, 0, 211, 0.65)", # violeta
+    "preR":      "rgba(0, 128, 0, 0.65)",   # verde
+    "preemR":    "rgba(0, 200, 0, 0.65)",   # verde claro
+    "postR":     "rgba(255, 140, 0, 0.75)", # naranja
+    "post_gram": "rgba(30, 144, 255, 0.75)" # azul
+}
+
+# Mapa de nombres de "kind"/intervención -> canal y color
+def kind_to_channel_and_color(label):
+    # label puede venir como "Pre · glifosato ..." o "PREEMERGENTE · selectivo + residual" en UI manual,
+    # y como kind en optimización ("preR","preemR","postR","post_gram")
+    s = str(label).lower()
+    if "glifosato" in s:       return "Glifo (total)", COLOR_TREAT["glifo"]
+    if "pre · selectivo no residual" in s or "nr" in s and "pre" in s: return "Pre NR (selectivo)", COLOR_TREAT["preNR"]
+    if "pre-siembra" in s or "presiembra" in s or "prer" in s: return "PreR (residual)", COLOR_TREAT["preR"]
+    if "preemergente" in s or "preemr" in s: return "PreemR (residual)", COLOR_TREAT["preemR"]
+    if "post · selectivo + residual" in s or "postr" in s or ("post" in s and "residual" in s): return "PostR (residual)", COLOR_TREAT["postR"]
+    if "graminicida" in s or "post_gram" in s: return "Post graminicida", COLOR_TREAT["post_gram"]
+    # fallback
+    return "Otro", "rgba(128,128,128,0.5)"
+
+def add_timeline_shapes(fig, row, col, xref, yref, intervals):
+    """
+    intervals: lista de dicts {ycat, x0, x1, color}
+    Dibuja rectángulos por cada intervalo en el subpanel inferior.
+    """
+    for it in intervals:
+        fig.add_shape(
+            type="rect",
+            x0=it["x0"], x1=it["x1"],
+            y0=it["y0"], y1=it["y1"],
+            xref=xref, yref=yref,
+            line=dict(width=0),
+            fillcolor=it["color"],
+            opacity=1.0,
+            row=row, col=col
+        )
 
 # =================== Reporte mejores ===================
 if results:
@@ -1084,44 +987,117 @@ if results:
         S1c, S2c, S3c, S4c = envb["S_ctrl"]
         sup_cap_b = envb["sup_cap_b"]
 
-        # ----- Gráfico 1 — Mejor escenario (con timeline abajo) -----
-        st.subheader("📊 Gráfico 1 — Mejor escenario")
-        fig_best1 = go.Figure()
-        fig_best1.add_trace(go.Scatter(x=ts, y=df_plot["EMERREL"], mode="lines", name="EMERREL (cruda)"))
-        fig_best1.add_trace(go.Scatter(x=df_week_b["fecha"], y=df_week_b["pl_sin_ctrl_cap"],
-                                       name="Aporte semanal (sin control, cap)", yaxis="y2", mode="lines+markers"))
-        fig_best1.add_trace(go.Scatter(x=df_week_b["fecha"], y=df_week_b["pl_con_ctrl_cap"],
-                                       name="Aporte semanal (con control, cap)", yaxis="y2",
-                                       mode="lines+markers", line=dict(dash="dot")))
-
-        # Curva Ciec recalculada
-        one_minus_best = compute_ciec_for(best["sow"])
-        Ciec_best = 1.0 - one_minus_best
-        fig_best1.add_trace(go.Scatter(x=ts_b, y=Ciec_best, mode="lines", name="Ciec (mejor)", yaxis="y3"))
-
-        fig_best1.update_layout(
-            margin=dict(l=10, r=10, t=40, b=50),
-            title="EMERREL y plantas·m²·semana · Mejor escenario",
-            xaxis_title="Tiempo",
-            yaxis_title="EMERREL",
-            yaxis2=dict(overlaying="y", side="right", title="pl·m²·sem⁻¹", range=[0,100]),
-            yaxis3=dict(overlaying="y", side="right", title="Ciec", position=0.97, range=[0,1])
+        # ===== Gráfico combinado (EMERREL arriba + TIMELINE abajo) =====
+        st.subheader("📊 Gráfico 1 — Mejor escenario (con timeline de tratamientos)")
+        # Alturas: 88% arriba (serie) y 12% abajo (timeline)
+        fig_best = make_subplots(
+            rows=2, cols=1,
+            shared_xaxes=True,
+            vertical_spacing=0.08,
+            row_heights=[0.88, 0.12],
+            specs=[[{"secondary_y": True}], [{}]]
         )
 
-        # timeline en mejor escenario (a partir del schedule del best)
-        best_intervals = []
-        for a in best["schedule"]:
-            ini = pd.to_datetime(a["date"])
-            fin = ini + pd.Timedelta(days=int(a["days"]))
-            key = a["kind"] if a["kind"] in ("preR","preemR","postR","post_gram") else "preNR"
-            if a["kind"] == "post_gram": key = "post_gram"
-            if a["kind"] == "postR": key = "postR"
-            if a["kind"] == "preemR": key = "preemR"
-            if a["kind"] == "preR": key = "preR"
-            best_intervals.append((ini, fin, key))
+        # --- Panel superior (EMERREL + pl/m2/sem + Ciec)
+        fig_best.add_trace(
+            go.Scatter(x=ts, y=df_plot["EMERREL"], mode="lines", name="EMERREL (cruda)"),
+            row=1, col=1, secondary_y=False
+        )
+        fig_best.add_trace(
+            go.Scatter(x=df_week_b["fecha"], y=df_week_b["pl_sin_ctrl_cap"],
+                       name="Aporte semanal (sin control, cap)", mode="lines+markers"),
+            row=1, col=1, secondary_y=True
+        )
+        fig_best.add_trace(
+            go.Scatter(x=df_week_b["fecha"], y=df_week_b["pl_con_ctrl_cap"],
+                       name="Aporte semanal (con control, cap)", mode="lines+markers",
+                       line=dict(dash="dot")),
+            row=1, col=1, secondary_y=True
+        )
+        one_minus_best = compute_ciec_for(best["sow"])
+        Ciec_best = 1.0 - one_minus_best
+        fig_best.add_trace(
+            go.Scatter(x=ts_b, y=Ciec_best, mode="lines", name="Ciec (mejor)"),
+            row=1, col=1, secondary_y=False
+        )
 
-        add_timeline(fig_best1, best_intervals, lanes=LANES, band_height=0.16)
-        st.plotly_chart(fig_best1, use_container_width=True)
+        fig_best.update_yaxes(title_text="EMERREL", row=1, col=1, secondary_y=False)
+        fig_best.update_yaxes(title_text="pl·m²·sem⁻¹", row=1, col=1, secondary_y=True, range=[0,100])
+        fig_best.update_xaxes(title_text="Tiempo", row=2, col=1)
+
+        fig_best.update_layout(
+            title="EMERREL y plantas·m²·semana · Mejor escenario + Timeline de tratamientos",
+            margin=dict(l=10, r=10, t=40, b=10)
+        )
+
+        # --- Panel inferior (TIMELINE con barras horizontales por tipo)
+        # Canales fijos (orden de filas):
+        channels = [
+            "Glifo (total)",
+            "Pre NR (selectivo)",
+            "PreR (residual)",
+            "PreemR (residual)",
+            "PostR (residual)",
+            "Post graminicida"
+        ]
+        # Eje Y categórico
+        fig_best.add_trace(
+            go.Scatter(x=[ts_b.min()], y=[channels[0]], mode="markers", marker=dict(opacity=0), showlegend=False),
+            row=2, col=1
+        )
+        fig_best.update_yaxes(title_text="", row=2, col=1, tickmode="array", tickvals=channels, ticktext=channels)
+
+        # Convertir schedule a intervalos por canal
+        intervals = []
+        pad = 0.42  # semialto de barra
+        for a in best["schedule"]:
+            # Intervalo temporal
+            x0 = pd.to_datetime(a["date"])
+            x1 = x0 + pd.Timedelta(days=int(a["days"]))
+            label = a.get("kind","")
+            ycat, color = kind_to_channel_and_color(label)
+            # Posición vertical (categoría como índice)
+            # Para shapes con yref al eje categórico, usamos rangos aproximados con valores numéricos:
+            # Truco: mapeamos cada categoría a un índice y dibujamos en coordenadas numéricas.
+        # Creamos un eje y numérico "falso" para shapes: usaremos yaxis type="category" pero shapes requieren numérico;
+        # solución: usamos "paper" y una banda por fila calculada. Más sencillo: convertir y a valores 0..N y setear yaxis2 como tipo 'linear'.
+        # Implementación: reconfiguramos yaxis de fila 2 a linear y dibujamos bandas con anotaciones de ticks personalizados.
+
+        # Reconfigurar el eje Y del timeline a LINEAL (0..Nfilas)
+        fig_best.update_yaxes(row=2, col=1, type="linear", range=[-0.5, len(channels)-0.5], showgrid=False)
+        fig_best.update_xaxes(row=2, col=1, showgrid=False)
+
+        # Ticks manuales con nombres
+        fig_best.update_yaxes(
+            row=2, col=1,
+            tickmode="array",
+            tickvals=list(range(len(channels))),
+            ticktext=channels
+        )
+
+        # Construir intervalos (numéricos en Y) y shapes
+        channel_to_idx = {c:i for i,c in enumerate(channels)}
+        intervals_shapes = []
+        for a in best["schedule"]:
+            x0 = pd.to_datetime(a["date"])
+            x1 = x0 + pd.Timedelta(days=int(a["days"]))
+            label = a.get("kind","")
+            ycat, color = kind_to_channel_and_color(label)
+            yi = channel_to_idx.get(ycat, len(channels)-1)
+            intervals_shapes.append({
+                "x0": x0, "x1": x1,
+                "y0": yi - pad, "y1": yi + pad,
+                "color": color
+            })
+
+        # Dibujo de barras (rectángulos) en el timeline
+        add_timeline_shapes(
+            fig_best, row=2, col=1,
+            xref="x2", yref="y2",
+            intervals=intervals_shapes
+        )
+
+        st.plotly_chart(fig_best, use_container_width=True)
 
         # ----- Figura 2 — Pérdida (%) vs x -----
         X2_b = float(np.nansum(sup_cap_b[envb["mask_since_b"]]))
