@@ -557,3 +557,137 @@ with st.expander("Parámetros calibrados (solo lectura)", expanded=False):
 - **loss(x) = α·x / (1 + α·x/Lmax)**
 """
     )
+# ================== OPTIMIZACIÓN DE ESCENARIOS ==================
+st.header("⚙️ Optimización de escenario de manejo")
+
+with st.expander("Configuración del optimizador", expanded=False):
+    opt_method = st.selectbox("Método de búsqueda", ["Grid Search", "Random Search", "Recocido Simulado"], index=1)
+    opt_objective = st.selectbox("Objetivo", ["Minimizar pérdida (%)", "Maximizar A2 controlado"], index=0)
+    n_iter = st.slider("Número de iteraciones (solo Random/SA)", 10, 500, 100, 10)
+    temp0 = st.number_input("Temperatura inicial (solo SA)", 0.1, 10.0, 1.5, 0.1)
+    cooling = st.number_input("Factor de enfriamiento (solo SA)", 0.80, 0.999, 0.95, 0.01)
+    run_opt = st.button("🚀 Ejecutar optimización")
+
+# ---------------- Definición del objetivo ----------------
+def simulate_loss(preR_d, preemR_d, postR_d, ef_preR, ef_preemR, ef_postR):
+    """
+    Corre la simulación encadenada con fechas y eficiencias dadas.
+    Devuelve la pérdida (%) o el A2_ctrl según objetivo.
+    """
+    # Ventanas válidas
+    fechas_d = ts.dt.date.values
+
+    def wres(d, dur):
+        w = np.zeros_like(fechas_d, float)
+        if not d: return w
+        d0 = d; d1 = d + timedelta(days=int(dur))
+        mask = (fechas_d >= d0) & (fechas_d < d1)
+        w[mask] = 1.0
+        return w
+
+    # Mortalidades por estado
+    k1 = (ef_preR/100)*wres(preR_d, preR_days) + (ef_preemR/100)*wres(preemR_d, preemR_days) + (ef_postR/100)*wres(postR_d, post_res_dias)
+    k2 = (ef_preR/100)*wres(preR_d, preR_days) + (ef_preemR/100)*wres(preemR_d, preemR_days) + (ef_postR/100)*wres(postR_d, post_res_dias)
+    k3 = (ef_postR/100)*wres(postR_d, post_res_dias)
+    k4 = (ef_postR/100)*wres(postR_d, post_res_dias)
+
+    sim = simulate_chained(
+        emerrel_series=df_plot.set_index("fecha")["EMERREL"],
+        one_minus_ciec=one_minus_Ciec,
+        sow_date=sow_date,
+        k1=k1, k2=k2, k3=k3, k4=k4,
+        T1=6, T2=21, T3=32,
+        factor_area_to_plants=factor_area_to_plants
+    )
+
+    contrib_ctl = sim["contrib_ctl"]
+    mask = sim["mask"]
+    if factor_area_to_plants is None or not np.isfinite(np.sum(contrib_ctl)):
+        return np.inf if "Minimizar" in opt_objective else -np.inf
+
+    X_ctrl = float(np.nansum(contrib_ctl[mask]))
+    loss_pct = float(_loss(X_ctrl))
+    if "Minimizar" in opt_objective:
+        return loss_pct
+    else:
+        return X_ctrl
+
+# ---------------- Métodos de búsqueda ----------------
+def grid_search():
+    results = []
+    preR_opts = [sow_date - timedelta(days=x) for x in [25,20,15]]
+    preem_opts = [sow_date + timedelta(days=x) for x in [0,5,10]]
+    post_opts = [sow_date + timedelta(days=x) for x in [20,30,40,50]]
+    effs = [60,70,80,90]
+    for preR_d in preR_opts:
+        for preemR_d in preem_opts:
+            for postR_d in post_opts:
+                for e1 in effs:
+                    val = simulate_loss(preR_d, preemR_d, postR_d, e1, e1, e1)
+                    results.append((val, preR_d, preemR_d, postR_d, e1))
+    return results
+
+def random_search(n=100):
+    results = []
+    for _ in range(n):
+        preR_d = sow_date - timedelta(days=np.random.randint(15,40))
+        preemR_d = sow_date + timedelta(days=np.random.randint(0,10))
+        postR_d = sow_date + timedelta(days=np.random.randint(20,60))
+        e1 = np.random.uniform(50,95)
+        val = simulate_loss(preR_d, preemR_d, postR_d, e1, e1, e1)
+        results.append((val, preR_d, preemR_d, postR_d, e1))
+    return results
+
+def simulated_annealing(n=100, T0=1.5, cool=0.95):
+    current = (sow_date - timedelta(days=20), sow_date+timedelta(days=5),
+               sow_date+timedelta(days=30), 80)
+    best_val = simulate_loss(*current)
+    best = current
+    T = T0
+    for i in range(n):
+        candidate = (
+            current[0] + timedelta(days=np.random.randint(-3,3)),
+            current[1] + timedelta(days=np.random.randint(-3,3)),
+            current[2] + timedelta(days=np.random.randint(-5,5)),
+            np.clip(current[3] + np.random.uniform(-5,5), 50, 95)
+        )
+        val = simulate_loss(*candidate)
+        delta = val - best_val if "Minimizar" in opt_objective else best_val - val
+        if delta < 0 or np.random.rand() < math.exp(-abs(delta)/max(1e-6,T)):
+            current = candidate
+            if ("Minimizar" in opt_objective and val < best_val) or ("Maximizar" in opt_objective and val > best_val):
+                best_val, best = val, candidate
+        T *= cool
+    return [(best_val, *best)]
+
+# ---------------- Ejecución ----------------
+if run_opt:
+    st.info(f"Ejecutando optimización ({opt_method})...")
+    if opt_method == "Grid Search":
+        results = grid_search()
+    elif opt_method == "Random Search":
+        results = random_search(n_iter)
+    else:
+        results = simulated_annealing(n_iter, temp0, cooling)
+
+    if not results:
+        st.error("No se obtuvieron resultados válidos.")
+    else:
+        df_res = pd.DataFrame(results, columns=["valor","preR_d","preemR_d","postR_d","eficiencia"])
+        if "Minimizar" in opt_objective:
+            best = df_res.loc[df_res["valor"].idxmin()]
+        else:
+            best = df_res.loc[df_res["valor"].idxmax()]
+        st.success(f"🧭 Mejor escenario encontrado:\n"
+                   f"PresiembraR={best.preR_d} · PreemR={best.preemR_d} · PostR={best.postR_d}\n"
+                   f"Eficiencia={best.eficiencia:.1f}% · {'Pérdida mínima' if 'Minimizar' in opt_objective else 'A2 máxima'}={best.valor:.2f}")
+
+        st.dataframe(df_res.sort_values("valor", ascending=("Minimizar" in opt_objective)))
+
+
+
+
+
+
+
+
