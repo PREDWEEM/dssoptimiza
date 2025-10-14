@@ -343,46 +343,63 @@ if decaimiento_tipo != "Exponencial": lam_exp = None
 
 # ========================= PESOS DE TRATAMIENTO POR DÍA =========================
 def weights_one_day(date_val):
-    if not date_val: return np.zeros_like(fechas_d, float)
-    d0 = date_val
-    return ((fechas_d >= d0) & (fechas_d < (d0 + timedelta(days=1)))).astype(float)
+    """Devuelve un vector binario (1 solo día activo) según la fecha dada."""
+    w = np.zeros_like(fechas_d, float)
+    if not date_val:
+        return w
+    d0 = pd.Timestamp(date_val).date()
+    mask = (fechas_d == d0)
+    w[mask] = 1.0
+    return w
+
 
 def weights_residual(start_date, dias):
+    """
+    Devuelve un vector (0–1) con el peso diario de la residualidad herbicida,
+    aplicando decaimiento lineal o exponencial según configuración del usuario.
+    Compatible con fechas tipo datetime.date o Timestamp.
+    """
     w = np.zeros_like(fechas_d, float)
-    if (not start_date) or (not dias) or (int(dias) <= 0): return w
-    d0 = start_date; d1 = start_date + timedelta(days=int(dias))
+    if (not start_date) or (not dias) or (int(dias) <= 0):
+        return w
+
+    # Convertir explícitamente a tipo date (evita conflictos Timestamp vs date)
+    d0 = pd.Timestamp(start_date).date()
+    d1 = (pd.Timestamp(start_date) + pd.Timedelta(days=int(dias))).date()
+
     mask = (fechas_d >= d0) & (fechas_d < d1)
-    if not mask.any(): return w
+    if not mask.any():
+        return w
+
     idxs = np.where(mask)[0]
     t_rel = np.arange(len(idxs), dtype=float)
+
+    # Decaimiento del efecto herbicida
     if decaimiento_tipo == "Ninguno":
         w[idxs] = 1.0
     elif decaimiento_tipo == "Lineal":
-        L = max(1, len(idxs)); w[idxs] = 1.0 - (t_rel / max(1.0, L - 1))
+        L = max(1, len(idxs))
+        w[idxs] = 1.0 - (t_rel / max(1.0, L - 1))
+    elif decaimiento_tipo == "Exponencial" and lam_exp is not None:
+        w[idxs] = np.exp(-lam_exp * t_rel)
     else:
-        w[idxs] = np.exp(-lam_exp * t_rel) if lam_exp is not None else 1.0
+        w[idxs] = 1.0
+
     return w
 
+
 def combine_kill(*terms):
-    """Productoria de (1 - eff*weight) → 1 - k (k = kill total del día)."""
-    base = np.ones_like(terms[0]) if terms else np.ones_like(fechas_d, float)
+    """
+    Combina efectos de mortalidad independientes:
+    producto de (1 − eficiencia×peso) → 1 − producto acumulado.
+    Ejemplo: combine_kill(0.8*w1, 0.6*w2) = 1 - (1−0.8w1)*(1−0.6w2)
+    """
+    if not terms:
+        return np.zeros_like(fechas_d, float)
+    base = np.ones_like(fechas_d, float)
     for t in terms:
         base *= (1.0 - np.clip(t, 0.0, 1.0))
     return np.clip(1.0 - base, 0.0, 1.0)
-
-# Ventanas por tratamiento
-w_glifo   = weights_one_day(pre_glifo_date) if pre_glifo else np.zeros_like(fechas_d, float)
-w_preNR   = weights_residual(pre_selNR_date, NR_DAYS_DEFAULT) if pre_selNR else np.zeros_like(fechas_d, float)
-w_preR    = weights_residual(preR_date, preR_days) if preR else np.zeros_like(fechas_d, float)
-w_preemR  = weights_residual(preemR_date, preemR_days) if preemR else np.zeros_like(fechas_d, float)
-w_postG   = weights_residual(post_gram_date, POST_GRAM_FORWARD_DAYS) if post_gram else np.zeros_like(fechas_d, float)
-w_postR   = weights_residual(post_selR_date, post_res_dias) if post_selR else np.zeros_like(fechas_d, float)
-
-# Kill diario por estado (0..1) — encadenado respeta estados:
-k1 = combine_kill(ef_pre_glifo/100*w_glifo, ef_pre_selNR/100*w_preNR, ef_preR/100*w_preR,  ef_preemR/100*w_preemR, ef_post_gram/100*w_postG, ef_post_selR/100*w_postR)
-k2 = combine_kill(ef_pre_glifo/100*w_glifo, ef_pre_selNR/100*w_preNR, ef_preR/100*w_preR,  ef_preemR/100*w_preemR,                     ef_post_selR/100*w_postR)
-k3 = combine_kill(ef_pre_glifo/100*w_glifo, ef_pre_selNR/100*w_preNR,                                          ef_post_gram/100*w_postG, ef_post_selR/100*w_postR)
-k4 = combine_kill(ef_pre_glifo/100*w_glifo, ef_pre_selNR/100*w_preNR,                                                                  ef_post_selR/100*w_postR)
 
 # ========================= SIMULACIÓN ENCADENADA =========================
 def simulate_chained(emerrel_series, one_minus_ciec, sow_date, k1, k2, k3, k4,
