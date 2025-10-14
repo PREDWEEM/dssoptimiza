@@ -989,37 +989,37 @@ if results:
                 text=a["kind"], showarrow=False, bgcolor="rgba(30,144,255,0.85)"
             )
             
-# ----- Bandas de intervenciones (colores + overlapping) -----
-color_map = {
-    "preR": "rgba(0, 128, 0, 0.25)",       # verde translúcido
-    "preemR": "rgba(0, 200, 0, 0.25)",     # verde más claro
-    "postR": "rgba(255, 140, 0, 0.25)",    # naranja
-    "post_gram": "rgba(30, 144, 255, 0.25)" # azul
-}
+        # ----- Bandas de intervenciones (colores + overlapping) -----
+        color_map = {
+        "preR": "rgba(0, 128, 0, 0.25)",       # verde translúcido
+        "preemR": "rgba(0, 200, 0, 0.25)",     # verde más claro
+        "postR": "rgba(255, 140, 0, 0.25)",    # naranja
+        "post_gram": "rgba(30, 144, 255, 0.25)" # azul
+            }
 
-# Crear una lista de intervalos (x0, x1, tipo)
-intervals = []
-for a in best["schedule"]:
-    ini = pd.to_datetime(a["date"])
-    fin = ini + pd.Timedelta(days=int(a["days"]))
-    intervals.append((ini, fin, a["kind"]))
+        # Crear una lista de intervalos (x0, x1, tipo)
+        intervals = []
+        for a in best["schedule"]:
+            ini = pd.to_datetime(a["date"])
+            fin = ini + pd.Timedelta(days=int(a["days"]))
+        intervals.append((ini, fin, a["kind"]))
 
-# Dibujar cada franja de herbicida
-for ini, fin, kind in intervals:
-    col = color_map.get(kind, "rgba(128,128,128,0.25)")
-    fig_best1.add_vrect(x0=ini, x1=fin, fillcolor=col, opacity=0.35, line_width=0)
-    fig_best1.add_annotation(
+        # Dibujar cada franja de herbicida
+        for ini, fin, kind in intervals:
+        col = color_map.get(kind, "rgba(128,128,128,0.25)")
+        fig_best1.add_vrect(x0=ini, x1=fin, fillcolor=col, opacity=0.35, line_width=0)
+        fig_best1.add_annotation(
         x=ini + (fin - ini) / 2,
         y=0.90, xref="x", yref="paper",
         text=kind,
         showarrow=False,
         font=dict(size=10, color="black"),
         bgcolor=col.replace("0.25", "0.85")
-    )
+            )
 
-# Detectar y marcar solapamientos
-for i, (ini_i, fin_i, kind_i) in enumerate(intervals):
-    for j, (ini_j, fin_j, kind_j) in enumerate(intervals):
+        # Detectar y marcar solapamientos
+        for i, (ini_i, fin_i, kind_i) in enumerate(intervals):
+            for j, (ini_j, fin_j, kind_j) in enumerate(intervals):
         if j <= i: continue
         overlap_ini = max(ini_i, ini_j)
         overlap_fin = min(fin_i, fin_j)
