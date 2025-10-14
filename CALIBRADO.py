@@ -244,7 +244,7 @@ else:
 df_ciec = pd.DataFrame({"fecha": df_plot["fecha"], "Ciec": Ciec})
 one_minus_Ciec = np.clip((1.0 - Ciec).astype(float), 0.0, 1.0)
 
-# ============= Cohortes S1..S4 =============
+# ============= Edades S1..S4 =============
 ts = pd.to_datetime(df_plot["fecha"])
 mask_since_sow = (ts.dt.date >= sow_date)
 
@@ -401,7 +401,7 @@ def weights_residual(start_date, dias):
         w[idxs] = np.exp(-lam_exp * t_rel) if lam_exp is not None else 1.0
     return w
 
-# ===== Aportes por estado (pl·m²·día⁻¹) =====
+# ===== Aportes por edad (pl·m²·día⁻¹) =====
 if factor_area_to_plants is not None:
     S1_pl = S1_arr * one_minus_Ciec * W_S["S1"] * factor_area_to_plants
     S2_pl = S2_arr * one_minus_Ciec * W_S["S2"] * factor_area_to_plants
@@ -1010,7 +1010,7 @@ if results:
         )
         st.plotly_chart(fig2_best, use_container_width=True)
 
-        # ----- Figura 4 — Dinámica temporal S1–S4 -----
+        # ----- Figura 4 — Dinámica de edades S1–S4 -----
         df_states_week_b = (
             pd.DataFrame({"fecha": ts_b, "S1": S1c, "S2": S2c, "S3": S3c, "S4": S4c})
             .set_index("fecha").resample("W-MON").sum().reset_index()
