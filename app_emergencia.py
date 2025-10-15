@@ -2,11 +2,15 @@
 # ===============================================================
 # PREDWEEM — Supresión (1−Ciec) + Control (AUC) + Cohortes SECUENCIALES · Optimización
 # ===============================================================
-# Reglas pedidas:
-# - Presiembra selectivo residual (preR): SOLO ≤ siembra−14 (S1–S2)
+# Reglas:
+# - Presiembra selectivo residual (preR): SOLO ≤ siembra−14 (actúa S1–S2)
 # - Preemergente selectivo residual (preemR): [siembra, siembra+10] (S1–S2)
 # - Post-residual (postR): ≥ siembra+20 (S1–S4)
 # - Graminicida post: ventana siembra..siembra+10 (S1–S3)
+# Lógica nueva:
+# - Gateo por remanente (window-aware) + Exclusión jerárquica:
+#   preR → preemR → postR → gram. Cada uno se aplica SOLO si queda remanente
+#   objetivo en su ventana y el acumulado previo es < 99%.
 # ===============================================================
 
 import io, re, math, datetime as dt
@@ -37,7 +41,8 @@ NR_DAYS_DEFAULT = 10
 POST_GRAM_FORWARD_DAYS = 11
 PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW  = 14
 PREEM_R_MAX_AFTER_SOW_DAYS        = 10
-EPS_REMAIN = 1e-9  # umbral para gateo por remanente
+EPS_REMAIN = 1e-9        # umbral para gateo por remanente
+EPS_EXCLUDE = 0.99       # 99%: umbral de exclusión jerárquica
 
 # ------------------ I/O CSV ------------------
 def sniff_sep_dec(text: str):
@@ -249,7 +254,8 @@ S3_coh = (S3_cap - (S1_coh + S2_coh)).clip(lower=0.0)
 S4_cap = np.minimum(S4_raw.clip(lower=0.0), (S1_coh + S2_coh + S3_coh).cumsum())
 S4_coh = (S4_cap - (S1_coh + S2_coh + S3_coh)).clip(lower=0.0)
 
-FC_S = {"S1": 0.0, "S2": 0.3, "S3": 0.6, "S4": 1.0}  # coef. relativo de aporte (sombreamiento)
+# Coeficientes relativos de aporte por estado (sombreamiento)
+FC_S = {"S1": 0.0, "S2": 0.3, "S3": 0.6, "S4": 1.0}
 
 S1_arr = S1_coh.reindex(ts).to_numpy(float)
 S2_arr = S2_coh.reindex(ts).to_numpy(float)
@@ -407,43 +413,83 @@ if factor_area_to_plants is not None:
         if "S3" in states_sel: np.multiply(ctrl_S3, reduc, out=ctrl_S3)
         if "S4" in states_sel: np.multiply(ctrl_S4, reduc, out=ctrl_S4)
 
-    # ---------- Gateo por remanente (evita solapamiento incoherente) ----------
-    def _remaining_in_window(weights, states_sel):
+    # ---------- Gateo por remanente + Exclusión jerárquica ----------
+    def _remaining_in_window(weights, states_sel, c1, c2, c3, c4):
         w = np.clip(weights, 0.0, 1.0)
         rem = 0.0
         for s in states_sel:
-            if s == "S1": rem += np.sum(S1_pl * ctrl_S1 * w)
-            elif s == "S2": rem += np.sum(S2_pl * ctrl_S2 * w)
-            elif s == "S3": rem += np.sum(S3_pl * ctrl_S3 * w)
-            elif s == "S4": rem += np.sum(S4_pl * ctrl_S4 * w)
+            if s == "S1": rem += np.sum(S1_pl * c1 * w)
+            elif s == "S2": rem += np.sum(S2_pl * c2 * w)
+            elif s == "S3": rem += np.sum(S3_pl * c3 * w)
+            elif s == "S4": rem += np.sum(S4_pl * c4 * w)
         return float(rem)
 
-    def maybe_apply(weights, eff_pct, states_sel, label=""):
-        if eff_pct <= 0: return False
-        rem = _remaining_in_window(weights, states_sel)
-        if rem <= EPS_REMAIN:
-            return False  # no hay objetivo en la ventana
-        apply_efficiency_per_state(weights, eff_pct, states_sel)
-        return True
+    def _eff_from_to(prev_eff, this_eff):
+        # combinar por independencia: 1 - (1 - prev)*(1 - this)
+        return 1.0 - (1.0 - prev_eff) * (1.0 - this_eff)
 
-    # ----- Aplicación con gateo por remanente -----
+    # Acumuladores de eficacia jerárquica
+    eff_accum_pre = 0.0      # tras presiembra
+    eff_accum_pre2 = 0.0     # tras presiembra + preemergente
+    eff_accum_all = 0.0      # tras presiembra + preemergente + post
+
+    # 1) Presiembra residual (S1–S2)
+    preR_applied = False
     if preR:
-        _ = maybe_apply(weights_residual(preR_date, preR_days), ef_preR, ["S1","S2"], "preR")
-    if preemR:
-        _ = maybe_apply(weights_residual(preemR_date, preemR_days), ef_preemR, ["S1","S2"], "preemR")
-    if pre_selNR:
-        _ = maybe_apply(weights_residual(pre_selNR_date, NR_DAYS_DEFAULT), ef_pre_selNR, ["S1","S2","S3","S4"], "preNR")
-    if pre_glifo:
-        _ = maybe_apply(weights_one_day(pre_glifo_date), ef_pre_glifo, ["S1","S2","S3","S4"], "pre_glifo")
-    if post_gram:
-        _ = maybe_apply(weights_residual(post_gram_date, POST_GRAM_FORWARD_DAYS), ef_post_gram, ["S1","S2","S3"], "post_gram")
-    if post_selR:
-        _ = maybe_apply(weights_residual(post_selR_date, post_res_dias), ef_post_selR, ["S1","S2","S3","S4"], "postR")
+        w_preR = weights_residual(preR_date, preR_days)
+        if _remaining_in_window(w_preR, ["S1","S2"], ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4) > EPS_REMAIN and ef_preR > 0:
+            apply_efficiency_per_state(w_preR, ef_preR, ["S1","S2"])
+            preR_applied = True
+            eff_accum_pre = _eff_from_to(0.0, ef_preR/100.0)
 
+    # 2) Preemergente (S1–S2) — solo si acumulado previo < 99% y hay remanente en su ventana
+    preemR_applied = False
+    if preemR and (eff_accum_pre < EPS_EXCLUDE):
+        w_preem = weights_residual(preemR_date, preemR_days)
+        if _remaining_in_window(w_preem, ["S1","S2"], ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4) > EPS_REMAIN and ef_preemR > 0:
+            apply_efficiency_per_state(w_preem, ef_preemR, ["S1","S2"])
+            preemR_applied = True
+            eff_accum_pre2 = _eff_from_to(eff_accum_pre, ef_preemR/100.0)
+        else:
+            eff_accum_pre2 = eff_accum_pre
+    else:
+        eff_accum_pre2 = eff_accum_pre
+
+    # 3) Pre no residual (NR) y Glifo pre (NR) — actúan independientemente (no alteran jerarquía de residuales, pero sí la masa)
+    if pre_selNR:
+        w = weights_residual(pre_selNR_date, NR_DAYS_DEFAULT)
+        if _remaining_in_window(w, ["S1","S2","S3","S4"], ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4) > EPS_REMAIN and ef_pre_selNR > 0:
+            apply_efficiency_per_state(w, ef_pre_selNR, ["S1","S2","S3","S4"])
+    if pre_glifo:
+        w = weights_one_day(pre_glifo_date)
+        if _remaining_in_window(w, ["S1","S2","S3","S4"], ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4) > EPS_REMAIN and ef_pre_glifo > 0:
+            apply_efficiency_per_state(w, ef_pre_glifo, ["S1","S2","S3","S4"])
+
+    # 4) Post residual (S1–S4) — solo si acumulado previo < 99% y hay remanente
+    postR_applied = False
+    if post_selR and (eff_accum_pre2 < EPS_EXCLUDE):
+        w_postR = weights_residual(post_selR_date, post_res_dias)
+        if _remaining_in_window(w_postR, ["S1","S2","S3","S4"], ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4) > EPS_REMAIN and ef_post_selR > 0:
+            apply_efficiency_per_state(w_postR, ef_post_selR, ["S1","S2","S3","S4"])
+            postR_applied = True
+            eff_accum_all = _eff_from_to(eff_accum_pre2, ef_post_selR/100.0)
+        else:
+            eff_accum_all = eff_accum_pre2
+    else:
+        eff_accum_all = eff_accum_pre2
+
+    # 5) Graminicida post (S1–S3) — solo si acumulado previo < 99% y hay remanente
+    if post_gram and (eff_accum_all < EPS_EXCLUDE):
+        w_gram = weights_residual(post_gram_date, POST_GRAM_FORWARD_DAYS)
+        if _remaining_in_window(w_gram, ["S1","S2","S3"], ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4) > EPS_REMAIN and ef_post_gram > 0:
+            apply_efficiency_per_state(w_gram, ef_post_gram, ["S1","S2","S3"])
+
+    # Series con control aplicado
     S1_pl_ctrl = S1_pl * ctrl_S1
     S2_pl_ctrl = S2_pl * ctrl_S2
     S3_pl_ctrl = S3_pl * ctrl_S3
     S4_pl_ctrl = S4_pl * ctrl_S4
+
     plantas_supresion      = (S1_pl + S2_pl + S3_pl + S4_pl)
     plantas_supresion_ctrl = (S1_pl_ctrl + S2_pl_ctrl + S3_pl_ctrl + S4_pl_ctrl)
 else:
@@ -701,13 +747,58 @@ def evaluate(sd: dt.date, schedule: list):
         if "S4" in states: np.multiply(c4, reduc, out=c4)
         return True
 
-    # Gateo por remanente en cada acción
-    for a in schedule:
+    # Eficacias acumuladas para exclusión jerárquica
+    eff_accum_pre = 0.0
+    eff_accum_pre2 = 0.0
+    eff_accum_all = 0.0
+
+    def _eff_from_to(prev_eff, this_eff):
+        return 1.0 - (1.0 - prev_eff) * (1.0 - this_eff)
+
+    # Ejecutar agenda en orden jerárquico: preR → preemR → postR → gram (más NR aparte)
+    # Ordenamos manualmente por tipo para asegurar jerarquía:
+    order = {"preR":0,"preemR":1,"postR":2,"post_gram":3,"NR_pre":4}
+    schedule_sorted = sorted(schedule, key=lambda a: order.get(a["kind"], 9))
+
+    for a in schedule_sorted:
         d0, d1 = a["date"], a["date"] + pd.Timedelta(days=int(a["days"]))
         w = ((fechas_d_local >= d0) & (fechas_d_local < d1)).astype(float)
-        if _remaining_in_window_eval(w, a["states"]) > EPS_REMAIN:
-            _apply_eval(w, a["eff"], a["states"])
-        # en caso contrario se omite (no objetivo en su ventana)
+
+        if a["kind"] == "preR":
+            if _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN and a["eff"] > 0:
+                _apply_eval(w, a["eff"], ["S1","S2"])
+                eff_accum_pre = _eff_from_to(0.0, a["eff"]/100.0)
+
+        elif a["kind"] == "preemR":
+            if eff_accum_pre < EPS_EXCLUDE and a["eff"] > 0:
+                if _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN:
+                    _apply_eval(w, a["eff"], ["S1","S2"])
+                    eff_accum_pre2 = _eff_from_to(eff_accum_pre, a["eff"]/100.0)
+                else:
+                    eff_accum_pre2 = eff_accum_pre
+            else:
+                eff_accum_pre2 = eff_accum_pre
+
+        elif a["kind"] == "postR":
+            if eff_accum_pre2 < EPS_EXCLUDE and a["eff"] > 0:
+                if _remaining_in_window_eval(w, ["S1","S2","S3","S4"]) > EPS_REMAIN:
+                    _apply_eval(w, a["eff"], ["S1","S2","S3","S4"])
+                    eff_accum_all = _eff_from_to(eff_accum_pre2, a["eff"]/100.0)
+                else:
+                    eff_accum_all = eff_accum_pre2
+            else:
+                eff_accum_all = eff_accum_pre2
+
+        elif a["kind"] == "post_gram":
+            if eff_accum_all < EPS_EXCLUDE and a["eff"] > 0:
+                if _remaining_in_window_eval(w, ["S1","S2","S3"]) > EPS_REMAIN:
+                    _apply_eval(w, a["eff"], ["S1","S2","S3"])
+
+        else:
+            # NR u otros (si los agregaras a la agenda)
+            if a.get("states"):
+                if _remaining_in_window_eval(w, a["states"]) > EPS_REMAIN and a["eff"] > 0:
+                    _apply_eval(w, a["eff"], a["states"])
 
     tot_ctrl = S1_pl*c1 + S2_pl*c2 + S3_pl*c3 + S4_pl*c4
     plantas_ctrl_cap = np.minimum(tot_ctrl, sup_cap)
@@ -900,12 +991,48 @@ def recompute_apply_best(best):
         if "S4" in states: np.multiply(c4, reduc, out=c4)
         return True
 
-    for a in best["schedule"]:
+    # Reaplicar agenda del mejor con jerarquía:
+    eff_accum_pre = 0.0
+    eff_accum_pre2 = 0.0
+    eff_accum_all = 0.0
+    def _eff_from_to(prev_eff, this_eff): return 1.0 - (1.0 - prev_eff) * (1.0 - this_eff)
+
+    order = {"preR":0,"preemR":1,"postR":2,"post_gram":3,"NR_pre":4}
+    for a in sorted(best["schedule"], key=lambda a: order.get(a["kind"], 9)):
         ini = pd.to_datetime(a["date"]).date()
         fin = (pd.to_datetime(a["date"]) + pd.Timedelta(days=int(a["days"]))).date()
         w = ((fechas_d_b >= ini) & (fechas_d_b < fin)).astype(float)
-        if _remaining_in_window_eval(w, a["states"]) > EPS_REMAIN:
-            _apply_eval(w, a["eff"], a["states"])
+
+        if a["kind"] == "preR":
+            if _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN and a["eff"] > 0:
+                _apply_eval(w, a["eff"], ["S1","S2"])
+                eff_accum_pre = _eff_from_to(0.0, a["eff"]/100.0)
+        elif a["kind"] == "preemR":
+            if eff_accum_pre < EPS_EXCLUDE and a["eff"] > 0:
+                if _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN:
+                    _apply_eval(w, a["eff"], ["S1","S2"])
+                    eff_accum_pre2 = _eff_from_to(eff_accum_pre, a["eff"]/100.0)
+                else:
+                    eff_accum_pre2 = eff_accum_pre
+            else:
+                eff_accum_pre2 = eff_accum_pre
+        elif a["kind"] == "postR":
+            if eff_accum_pre2 < EPS_EXCLUDE and a["eff"] > 0:
+                if _remaining_in_window_eval(w, ["S1","S2","S3","S4"]) > EPS_REMAIN:
+                    _apply_eval(w, a["eff"], ["S1","S2","S3","S4"])
+                    eff_accum_all = _eff_from_to(eff_accum_pre2, a["eff"]/100.0)
+                else:
+                    eff_accum_all = eff_accum_pre2
+            else:
+                eff_accum_all = eff_accum_pre2
+        elif a["kind"] == "post_gram":
+            if eff_accum_all < EPS_EXCLUDE and a["eff"] > 0:
+                if _remaining_in_window_eval(w, ["S1","S2","S3"]) > EPS_REMAIN:
+                    _apply_eval(w, a["eff"], ["S1","S2","S3"])
+        else:
+            if a.get("states"):
+                if _remaining_in_window_eval(w, a["states"]) > EPS_REMAIN and a["eff"] > 0:
+                    _apply_eval(w, a["eff"], a["states"])
 
     total_ctrl_daily = (S1p*c1 + S2p*c2 + S3p*c3 + S4p*c4)
     eps = 1e-12
