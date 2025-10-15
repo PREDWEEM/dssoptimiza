@@ -2,6 +2,7 @@
 # ===============================================================
 # 🌾 PREDWEEM — Cohortes Secuenciales + Optimización
 # + Áreas coloreadas por tratamiento herbicida
+# (corregido: conversión explícita de y_max → float)
 # ===============================================================
 
 import io, math, datetime as dt
@@ -52,7 +53,7 @@ S4_cap = np.minimum(np.array(S4_raw), np.cumsum(S1 + S2 + S3))
 S4 = np.clip(S4_cap - (S1 + S2 + S3), 0, None)
 
 df = pd.DataFrame({"fecha": days, "S1": S1, "S2": S2, "S3": S3, "S4": S4})
-y_max = df[["S1","S2","S3","S4"]].sum(axis=1).max() * 1.1
+y_max = float(df[["S1","S2","S3","S4"]].sum(axis=1).max() * 1.1)
 
 # ---------------------------------------------------------------
 # DEFINICIÓN DE FECHAS DE TRATAMIENTOS (EJEMPLO)
@@ -163,4 +164,5 @@ fig_opt.update_layout(
 )
 st.plotly_chart(fig_opt, use_container_width=True)
 
-st.success("✅ Script completo: áreas coloreadas por tratamiento herbicida.")
+st.success("✅ Script corregido y funcional (y_max convertido a float).")
+
