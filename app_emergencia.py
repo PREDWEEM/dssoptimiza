@@ -2,6 +2,7 @@
 # ===============================================================
 # 🌾 PREDWEEM — Cohortes Secuenciales + Optimización
 # + Tratamientos con líneas horizontales y leyenda lateral
+# (versión corregida: np.clip para evitar TypeError)
 # ===============================================================
 
 import io, math, datetime as dt
@@ -41,15 +42,15 @@ em_rel = np.clip(np.cumsum(np.random.normal(0.02, 0.01, len(days))), 0, 1)
 S1_raw, S2_raw, S3_raw, S4_raw = em_rel*0.3, em_rel*0.25, em_rel*0.25, em_rel*0.2
 
 # ---------------------------------------------------------------
-# SECUENCIALIDAD S1→S2→S3→S4
+# SECUENCIALIDAD S1→S2→S3→S4 (versión robusta)
 # ---------------------------------------------------------------
-S1 = S1_raw.clip(lower=0)
-S2_cap = np.minimum(S2_raw, S1.cumsum())
-S2 = (S2_cap - S1).clip(lower=0)
-S3_cap = np.minimum(S3_raw, (S1 + S2).cumsum())
-S3 = (S3_cap - (S1 + S2)).clip(lower=0)
-S4_cap = np.minimum(S4_raw, (S1 + S2 + S3).cumsum())
-S4 = (S4_cap - (S1 + S2 + S3)).clip(lower=0)
+S1 = np.clip(np.array(S1_raw), 0, None)
+S2_cap = np.minimum(np.array(S2_raw), np.cumsum(S1))
+S2 = np.clip(S2_cap - S1, 0, None)
+S3_cap = np.minimum(np.array(S3_raw), np.cumsum(S1 + S2))
+S3 = np.clip(S3_cap - (S1 + S2), 0, None)
+S4_cap = np.minimum(np.array(S4_raw), np.cumsum(S1 + S2 + S3))
+S4 = np.clip(S4_cap - (S1 + S2 + S3), 0, None)
 
 df = pd.DataFrame({"fecha": days, "S1": S1, "S2": S2, "S3": S3, "S4": S4})
 y_max = df[["S1","S2","S3","S4"]].sum(axis=1).max() * 1.1
@@ -67,7 +68,7 @@ t_gram_ini, t_gram_fin = sow_date + timedelta(days=5), sow_date + timedelta(days
 # ---------------------------------------------------------------
 def add_trat_line(fig, t_ini, t_fin, color, label, y_pos=-5, thickness=5):
     """Dibuja línea horizontal para indicar aplicación de un tratamiento"""
-    if pd.isna(t_ini) or pd.isna(t_fin): 
+    if pd.isna(t_ini) or pd.isna(t_fin):
         return
     fig.add_shape(
         type="line", x0=t_ini, x1=t_fin, y0=y_pos, y1=y_pos,
@@ -175,4 +176,4 @@ fig_opt.update_layout(
 )
 st.plotly_chart(fig_opt, use_container_width=True)
 
-st.success("✅ Script completo: Cohortes secuenciales + Optimización + Líneas y leyenda lateral.")
+st.success("✅ Script corregido y funcional (np.clip aplicado para evitar TypeError).")
