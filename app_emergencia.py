@@ -26,7 +26,7 @@ import itertools, random, math as _math
 # ------------------ FUNCIÓN DE PÉRDIDA ------------------
 def _loss(x):
     x = np.asarray(x, dtype=float)
-    return 0.375 * x / (1.0 + (0.375 * x / 76.639))
+    return 0.375 * x / (1.0 + (0.503 * x / 125.91))
 
 # ------------------ ESTADO UI ------------------
 if "opt_running" not in st.session_state: st.session_state.opt_running = False
