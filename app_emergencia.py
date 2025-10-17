@@ -717,16 +717,16 @@ globals()["T12"] = int(T12)
 globals()["T23"] = int(T23)
 globals()["T34"] = int(T34)
 
-    # ------------------ ESTADOS FENOLÓGICOS SECUENCIALES (S1→S4) ------------------
-    births = np.where(mask_since.to_numpy(), emerrel_all, 0.0)
+# ------------------ ESTADOS FENOLÓGICOS SECUENCIALES (S1→S4) ------------------
+births = np.where(mask_since.to_numpy(), emerrel_all, 0.0)
 
-    # Inicialización de compartimentos
-    S1 = births.copy()
-    S2 = np.zeros_like(births)
-    S3 = np.zeros_like(births)
-    S4 = np.zeros_like(births)
+# Inicialización de compartimentos
+S1 = births.copy()
+S2 = np.zeros_like(births)
+S3 = np.zeros_like(births)
+S4 = np.zeros_like(births)
 
-    for i in range(len(births)):
+for i in range(len(births)):
         # S1 → S2
         if i - int(T12) >= 0:
             moved = births[i - int(T12)]
