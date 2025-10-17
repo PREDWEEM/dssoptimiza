@@ -697,20 +697,52 @@ def recompute_for_sow(sow_d: dt.date):
     births = np.where(mask_since.to_numpy(), emerrel_all, 0.0)
     s = pd.Series(births, index=ts_all)
 
-    # Cohortes SECUENCIALES en optimización
-    def roll_sum_shift_local(S, win, shift): return S.rolling(win, min_periods=0).sum().shift(shift)
-    S1_raw = roll_sum_shift_local(s,6,1).fillna(0.0)
-    S2_raw = roll_sum_shift_local(s,21,7).fillna(0.0)
-    S3_raw = roll_sum_shift_local(s,32,28).fillna(0.0)
-    S4_raw = s.cumsum().shift(60).fillna(0.0)
+    # ------------------ ESTADOS FENOLÓGICOS SECUENCIALES (S1→S4) ------------------
+    # Representan fases fenológicas del mismo grupo de individuos
+    # (no cohortes acumuladas). Cada individuo progresa de S1 a S4 con duraciones medias.
 
-    S1 = S1_raw.clip(lower=0.0)
-    S2_cap = np.minimum(S2_raw.clip(lower=0.0), S1.cumsum())
-    S2 = (S2_cap - S1).clip(lower=0.0)
-    S3_cap = np.minimum(S3_raw.clip(lower=0.0), (S1 + S2).cumsum())
-    S3 = (S3_cap - (S1 + S2)).clip(lower=0.0)
-    S4_cap = np.minimum(S4_raw.clip(lower=0.0), (S1 + S2 + S3).cumsum())
-    S4 = (S4_cap - (S1 + S2 + S3)).clip(lower=0.0)
+    births = np.where(mask_since.to_numpy(), emerrel_all, 0.0)
+
+    # Duraciones promedio entre estados (usar mismas que en la interfaz principal)
+    T12, T23, T34 = 10, 15, 20  # puede sincronizarse con los sliders principales
+
+    # Inicialización de compartimentos
+    S1 = births.copy()
+    S2 = np.zeros_like(births)
+    S3 = np.zeros_like(births)
+    S4 = np.zeros_like(births)
+
+    for i in range(len(births)):
+        # S1 → S2
+        if i - T12 >= 0:
+            moved = births[i - T12]
+            S1[i - T12] -= moved
+            S2[i] += moved
+        # S2 → S3
+        if i - (T12 + T23) >= 0:
+            moved = births[i - (T12 + T23)]
+            S2[i - (T12 + T23)] -= moved
+            S3[i] += moved
+        # S3 → S4
+        if i - (T12 + T23 + T34) >= 0:
+            moved = births[i - (T12 + T23 + T34)]
+            S3[i - (T12 + T23 + T34)] -= moved
+            S4[i] += moved
+
+    # Normalizar para evitar acumulación negativa o excedente
+    S1 = np.clip(S1, 0.0, None)
+    S2 = np.clip(S2, 0.0, None)
+    S3 = np.clip(S3, 0.0, None)
+    S4 = np.clip(S4, 0.0, None)
+
+    total_states = S1 + S2 + S3 + S4
+    emeac = np.cumsum(births)
+    scale = np.divide(np.clip(emeac, 1e-9, None), np.clip(total_states, 1e-9, None))
+    scale = np.minimum(scale, 1.0)
+    S1 *= scale
+    S2 *= scale
+    S3 *= scale
+    S4 *= scale
 
     auc_cruda_loc = auc_time(ts_all, emerrel_all, mask=mask_since)
     if auc_cruda_loc <= 0: return None
