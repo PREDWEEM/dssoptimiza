@@ -689,7 +689,7 @@ def compute_ciec_for(sd):
         Ciec_loc = np.zeros_like(LAIx, float)
     return np.clip(1.0 - Ciec_loc, 0.0, 1.0)
 
-def recompute_for_sow(sow_d: dt.date):
+def recompute_for_sow(sow_d: dt.date, T12: int, T23: int, T34: int):
     mask_since = (ts_all.dt.date >= sow_d)
     one_minus = compute_ciec_for(sow_d)
 
@@ -717,35 +717,43 @@ globals()["T12"] = int(T12)
 globals()["T23"] = int(T23)
 globals()["T34"] = int(T34)
 
-# Inicialización de compartimentos
-S1 = births.copy()         # nuevos emergidos
-S2 = np.zeros_like(births) # en desarrollo
-S3 = np.zeros_like(births) # vegetativos
-S4 = np.zeros_like(births) # adultos
+    # ------------------ ESTADOS FENOLÓGICOS SECUENCIALES (S1→S4) ------------------
+    births = np.where(mask_since.to_numpy(), emerrel_all, 0.0)
 
-# Simulación compartimental (flujo entre estados)
-for i in range(len(births)):
-    # S1 → S2
-    if i - int(T12) >= 0:
-        moved = births[i - int(T12)]
-        S1[i - int(T12)] -= moved
-        S2[i] += moved
-    # S2 → S3
-    if i - (int(T12) + int(T23)) >= 0:
-        moved = births[i - (int(T12) + int(T23))]
-        S2[i - (int(T12) + int(T23))] -= moved
-        S3[i] += moved
-    # S3 → S4
-    if i - (int(T12) + int(T23) + int(T34)) >= 0:
-        moved = births[i - (int(T12) + int(T23) + int(T34))]
-        S3[i - (int(T12) + int(T23) + int(T34))] -= moved
-        S4[i] += moved
+    # Inicialización de compartimentos
+    S1 = births.copy()
+    S2 = np.zeros_like(births)
+    S3 = np.zeros_like(births)
+    S4 = np.zeros_like(births)
 
-# Evitar valores negativos por redondeo numérico
-S1 = np.clip(S1, 0.0, None)
-S2 = np.clip(S2, 0.0, None)
-S3 = np.clip(S3, 0.0, None)
-S4 = np.clip(S4, 0.0, None)
+    for i in range(len(births)):
+        # S1 → S2
+        if i - int(T12) >= 0:
+            moved = births[i - int(T12)]
+            S1[i - int(T12)] -= moved
+            S2[i] += moved
+        # S2 → S3
+        if i - (int(T12) + int(T23)) >= 0:
+            moved = births[i - (int(T12) + int(T23))]
+            S2[i - (int(T12) + int(T23))] -= moved
+            S3[i] += moved
+        # S3 → S4
+        if i - (int(T12) + int(T23) + int(T34)) >= 0:
+            moved = births[i - (int(T12) + int(T23) + int(T34))]
+            S3[i - (int(T12) + int(T23) + int(T34))] -= moved
+            S4[i] += moved
+
+    # Correcciones numéricas y conservación
+    S1 = np.clip(S1, 0.0, None)
+    S2 = np.clip(S2, 0.0, None)
+    S3 = np.clip(S3, 0.0, None)
+    S4 = np.clip(S4, 0.0, None)
+
+    total_states = S1 + S2 + S3 + S4
+    emeac = np.cumsum(births)
+    scale = np.divide(np.clip(emeac, 1e-9, None), np.clip(total_states, 1e-9, None))
+    scale = np.minimum(scale, 1.0)
+    S1 *= scale; S2 *= scale; S3 *= scale; S4 *= scale
 
 # Escalado para asegurar que la suma de estados ≤ EMEAC
 total_states = S1 + S2 + S3 + S4
