@@ -229,9 +229,8 @@ df_ciec = pd.DataFrame({"fecha": df_plot["fecha"], "Ciec": Ciec})
 one_minus_Ciec = np.clip((1.0 - Ciec).astype(float), 0.0, 1.0)
 
 # ------------------ ESTADOS FENOLÓGICOS SECUENCIALES (S1→S4) ------------------
-# Estos no son cohortes independientes, sino fases fenológicas sucesivas
-# del mismo grupo de individuos (plántula → vegetativo → roseta → madurez).
-# Cada individuo pasa por S1→S2→S3→S4 según tiempos de residencia definidos.
+# Representan fases fenológicas del mismo grupo de individuos (no cohortes).
+# Cada individuo progresa de S1 a S4 con duraciones medias configurables.
 
 ts = pd.to_datetime(df_plot["fecha"])
 mask_since_sow = (ts.dt.date >= sow_date)
@@ -240,10 +239,15 @@ mask_since_sow = (ts.dt.date >= sow_date)
 births = df_plot["EMERREL"].astype(float).clip(lower=0.0).to_numpy()
 births = np.where(mask_since_sow.to_numpy(), births, 0.0)
 
-# Duraciones promedio entre estados (en días)
+# Duraciones promedio entre estados (sliders en barra lateral)
 T12 = st.sidebar.number_input("Duración S1→S2 (días)", 1, 60, 10, 1)
 T23 = st.sidebar.number_input("Duración S2→S3 (días)", 1, 60, 15, 1)
 T34 = st.sidebar.number_input("Duración S3→S4 (días)", 1, 60, 20, 1)
+
+# Hacerlas globales para el optimizador (recompute_for_sow y recompute_apply_best)
+globals()["T12"] = int(T12)
+globals()["T23"] = int(T23)
+globals()["T34"] = int(T34)
 
 # Inicialización de compartimentos
 S1 = births.copy()         # nuevos emergidos
@@ -251,47 +255,42 @@ S2 = np.zeros_like(births) # en desarrollo
 S3 = np.zeros_like(births) # vegetativos
 S4 = np.zeros_like(births) # adultos
 
-# Simulación compartimental (flujo de estados)
+# Simulación compartimental (flujo entre estados)
 for i in range(len(births)):
-    # S1→S2
-    if i - T12 >= 0:
-        moved = births[i - T12]
-        S1[i - T12] -= moved
+    # S1 → S2
+    if i - int(T12) >= 0:
+        moved = births[i - int(T12)]
+        S1[i - int(T12)] -= moved
         S2[i] += moved
-    # S2→S3
-    if i - (T12 + T23) >= 0:
-        moved = births[i - (T12 + T23)]
-        S2[i - (T12 + T23)] -= moved
+    # S2 → S3
+    if i - (int(T12) + int(T23)) >= 0:
+        moved = births[i - (int(T12) + int(T23))]
+        S2[i - (int(T12) + int(T23))] -= moved
         S3[i] += moved
-    # S3→S4
-    if i - (T12 + T23 + T34) >= 0:
-        moved = births[i - (T12 + T23 + T34)]
-        S3[i - (T12 + T23 + T34)] -= moved
+    # S3 → S4
+    if i - (int(T12) + int(T23) + int(T34)) >= 0:
+        moved = births[i - (int(T12) + int(T23) + int(T34))]
+        S3[i - (int(T12) + int(T23) + int(T34))] -= moved
         S4[i] += moved
 
-# Normalizar por seguridad (evitar negativos numéricos)
+# Evitar valores negativos por redondeo numérico
 S1 = np.clip(S1, 0.0, None)
 S2 = np.clip(S2, 0.0, None)
 S3 = np.clip(S3, 0.0, None)
 S4 = np.clip(S4, 0.0, None)
 
-# Chequeo: la suma de estados ≤ total emergido
+# Escalado para asegurar que la suma de estados ≤ EMEAC
 total_states = S1 + S2 + S3 + S4
 emeac = np.cumsum(births)
 scale = np.divide(np.clip(emeac, 1e-9, None), np.clip(total_states, 1e-9, None))
 scale = np.minimum(scale, 1.0)
-S1 *= scale
-S2 *= scale
-S3 *= scale
-S4 *= scale
+S1 *= scale; S2 *= scale; S3 *= scale; S4 *= scale
 
-# Coeficientes relativos de aporte por estado (efecto de sombreo / interferencia)
+# Coeficientes relativos de aporte por estado (efecto competitivo / sombreo)
 FC_S = {"S1": 0.0, "S2": 0.3, "S3": 0.6, "S4": 1.0}
 
-S1_arr = S1
-S2_arr = S2
-S3_arr = S3
-S4_arr = S4
+# Arrays finales (compatibles con el resto del flujo)
+S1_arr = S1; S2_arr = S2; S3_arr = S3; S4_arr = S4
 
 # ------------------ ESCALADO A PLANTAS ------------------
 auc_cruda = auc_time(ts, df_plot["EMERREL"].to_numpy(float), mask=mask_since_sow)
