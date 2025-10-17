@@ -697,73 +697,76 @@ def recompute_for_sow(sow_d: dt.date):
     births = np.where(mask_since.to_numpy(), emerrel_all, 0.0)
     s = pd.Series(births, index=ts_all)
 
-    # ------------------ ESTADOS FENOLÓGICOS SECUENCIALES (S1→S4) ------------------
-    # Representan fases fenológicas del mismo grupo de individuos
-    # (no cohortes acumuladas). Cada individuo progresa de S1 a S4 con duraciones medias.
+  # ------------------ ESTADOS FENOLÓGICOS SECUENCIALES (S1→S4) ------------------
+# Representan fases fenológicas del mismo grupo de individuos (no cohortes).
+# Cada individuo progresa de S1 a S4 con duraciones medias configurables.
 
-    births = np.where(mask_since.to_numpy(), emerrel_all, 0.0)
+ts = pd.to_datetime(df_plot["fecha"])
+mask_since_sow = (ts.dt.date >= sow_date)
 
-    # Duraciones promedio entre estados (usar mismas que en la interfaz principal)
-    T12, T23, T34 = int(T12), int(T23), int(T34)
+# EMERREL diario (0–1)
+births = df_plot["EMERREL"].astype(float).clip(lower=0.0).to_numpy()
+births = np.where(mask_since_sow.to_numpy(), births, 0.0)
 
-    # Inicialización de compartimentos
-    S1 = births.copy()
-    S2 = np.zeros_like(births)
-    S3 = np.zeros_like(births)
-    S4 = np.zeros_like(births)
+# Duraciones promedio entre estados (sliders en barra lateral)
+T12 = st.sidebar.number_input("Duración S1→S2 (días)", 1, 60, 10, 1)
+T23 = st.sidebar.number_input("Duración S2→S3 (días)", 1, 60, 15, 1)
+T34 = st.sidebar.number_input("Duración S3→S4 (días)", 1, 60, 20, 1)
 
-    for i in range(len(births)):
-        # S1 → S2
-        if i - T12 >= 0:
-            moved = births[i - T12]
-            S1[i - T12] -= moved
-            S2[i] += moved
-        # S2 → S3
-        if i - (T12 + T23) >= 0:
-            moved = births[i - (T12 + T23)]
-            S2[i - (T12 + T23)] -= moved
-            S3[i] += moved
-        # S3 → S4
-        if i - (T12 + T23 + T34) >= 0:
-            moved = births[i - (T12 + T23 + T34)]
-            S3[i - (T12 + T23 + T34)] -= moved
-            S4[i] += moved
+# Hacerlas globales para el optimizador (recompute_for_sow)
+globals()["T12"] = int(T12)
+globals()["T23"] = int(T23)
+globals()["T34"] = int(T34)
 
-    # Normalizar para evitar acumulación negativa o excedente
-    S1 = np.clip(S1, 0.0, None)
-    S2 = np.clip(S2, 0.0, None)
-    S3 = np.clip(S3, 0.0, None)
-    S4 = np.clip(S4, 0.0, None)
+# Inicialización de compartimentos
+S1 = births.copy()         # nuevos emergidos
+S2 = np.zeros_like(births) # en desarrollo
+S3 = np.zeros_like(births) # vegetativos
+S4 = np.zeros_like(births) # adultos
 
-    total_states = S1 + S2 + S3 + S4
-    emeac = np.cumsum(births)
-    scale = np.divide(np.clip(emeac, 1e-9, None), np.clip(total_states, 1e-9, None))
-    scale = np.minimum(scale, 1.0)
-    S1 *= scale
-    S2 *= scale
-    S3 *= scale
-    S4 *= scale
+# Simulación compartimental (flujo entre estados)
+for i in range(len(births)):
+    # S1 → S2
+    if i - int(T12) >= 0:
+        moved = births[i - int(T12)]
+        S1[i - int(T12)] -= moved
+        S2[i] += moved
+    # S2 → S3
+    if i - (int(T12) + int(T23)) >= 0:
+        moved = births[i - (int(T12) + int(T23))]
+        S2[i - (int(T12) + int(T23))] -= moved
+        S3[i] += moved
+    # S3 → S4
+    if i - (int(T12) + int(T23) + int(T34)) >= 0:
+        moved = births[i - (int(T12) + int(T23) + int(T34))]
+        S3[i - (int(T12) + int(T23) + int(T34))] -= moved
+        S4[i] += moved
 
-    auc_cruda_loc = auc_time(ts_all, emerrel_all, mask=mask_since)
-    if auc_cruda_loc <= 0: return None
+# Evitar valores negativos por redondeo numérico
+S1 = np.clip(S1, 0.0, None)
+S2 = np.clip(S2, 0.0, None)
+S3 = np.clip(S3, 0.0, None)
+S4 = np.clip(S4, 0.0, None)
 
-    factor_area = MAX_PLANTS_CAP / auc_cruda_loc
-    S1_pl = np.where(mask_since, S1 * one_minus * 0.0 * factor_area, 0.0)
-    S2_pl = np.where(mask_since, S2 * one_minus * 0.3 * factor_area, 0.0)
-    S3_pl = np.where(mask_since, S3 * one_minus * 0.6 * factor_area, 0.0)
-    S4_pl = np.where(mask_since, S4 * one_minus * 1.0 * factor_area, 0.0)
+# Escalado para asegurar que la suma de estados ≤ EMEAC
+total_states = S1 + S2 + S3 + S4
+emeac = np.cumsum(births)
+scale = np.divide(np.clip(emeac, 1e-9, None), np.clip(total_states, 1e-9, None))
+scale = np.minimum(scale, 1.0)
+S1 *= scale
+S2 *= scale
+S3 *= scale
+S4 *= scale
 
-    base_pl_daily = np.where(mask_since, emerrel_all * factor_area, 0.0)
-    base_pl_daily_cap_loc = cap_cumulative(base_pl_daily, MAX_PLANTS_CAP, mask_since.to_numpy())
-    sup_cap = np.minimum(S1_pl + S2_pl + S3_pl + S4_pl, base_pl_daily_cap_loc)
+# Coeficientes relativos de aporte por estado (efecto competitivo / sombreo)
+FC_S = {"S1": 0.0, "S2": 0.3, "S3": 0.6, "S4": 1.0}
 
-    return {"mask_since": mask_since.to_numpy(),
-            "factor_area": factor_area,
-            "auc_cruda": auc_cruda_loc,
-            "S_pl": (S1_pl, S2_pl, S3_pl, S4_pl),
-            "sup_cap": sup_cap,
-            "ts": ts_all,
-            "fechas_d": fechas_d_all}
+# Arrays finales (consistentes con el resto del flujo)
+S1_arr = S1
+S2_arr = S2
+S3_arr = S3
+S4_arr = S4
+
 
 # Acciones y combinatoria
 def act_presiembraR(date_val, R, eff): return {"kind":"preR",   "date":pd.to_datetime(date_val).date(), "days":int(R), "eff":eff, "states":["S1","S2"]}
