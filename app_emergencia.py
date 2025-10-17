@@ -781,7 +781,7 @@ def evaluate(sd: dt.date, schedule: list):
         if a["kind"] == "preR" and d > (sow - pd.Timedelta(days=PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW)): return None
         if a["kind"] == "preemR" and (d < sow or d > (sow + pd.Timedelta(days=PREEM_R_MAX_AFTER_SOW_DAYS))): return None
 
-    env = recompute_for_sow(sd)
+    env = recompute_for_sow(sd, int(T12), int(T23), int(T34))
     if env is None: return None
     mask_since = env["mask_since"]; factor_area = env["factor_area"]
     S1_pl, S2_pl, S3_pl, S4_pl = env["S_pl"]; sup_cap = env["sup_cap"]
