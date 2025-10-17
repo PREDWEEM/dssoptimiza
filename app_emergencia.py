@@ -704,7 +704,7 @@ def recompute_for_sow(sow_d: dt.date):
     births = np.where(mask_since.to_numpy(), emerrel_all, 0.0)
 
     # Duraciones promedio entre estados (usar mismas que en la interfaz principal)
-    T12, T23, T34 = 10, 15, 20  # puede sincronizarse con los sliders principales
+    T12, T23, T34 = int(T12), int(T23), int(T34)
 
     # Inicialización de compartimentos
     S1 = births.copy()
