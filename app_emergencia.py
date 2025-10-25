@@ -1,40 +1,222 @@
-        # ===========================================================
-        # 🔍 Descomposición de pérdida: dentro y fuera del PCC
-        # ===========================================================
-        st.subheader("📉 Descomposición de pérdida (PCC vs fuera del PCC)")
+# -*- coding: utf-8 -*-
+# ===============================================================
+# 🌾 PREDWEEM v3.14 — Supresión (1−Ciec) + Control (AUC)
+# + Cohortes SECUENCIALES · Optimización + Sensibilidad PCC
+# ===============================================================
+# Parámetros calibrados:
+#   α = 0.503   ·   Lmax = 125.91
+# Pesos por estado (efecto competitivo relativo):
+#   S1=0.1 · S2=0.3 · S3=0.6 · S4=1.0
+# ===============================================================
 
-        AUC_in  = float(envb["AUC_in"]) if "AUC_in" in envb else 0
-        AUC_out = float(envb["AUC_out"]) if "AUC_out" in envb else 0
-        AUC_tot = AUC_in + AUC_out if (AUC_in + AUC_out) > 0 else 1.0
-        loss_total = best["loss_pct"]
-        prop_in, prop_out = AUC_in/AUC_tot, AUC_out/AUC_tot
-        loss_in, loss_out = loss_total*prop_in, loss_total*prop_out
+import io, re, math, datetime as dt
+import numpy as np
+import pandas as pd
+import streamlit as st
+import plotly.graph_objects as go
+from datetime import timedelta
 
-        df_loss = pd.DataFrame({
-            "Componente": ["Dentro PCC","Fuera PCC","Total"],
-            "AUC ponderado": [AUC_in,AUC_out,AUC_tot],
-            "Proporción (%)": [prop_in*100,prop_out*100,100],
-            "Pérdida (%)": [loss_in,loss_out,loss_total]
-        })
-        st.dataframe(df_loss.style.format({
-            "AUC ponderado":"{:.2f}","Proporción (%)":"{:.1f}","Pérdida (%)":"{:.2f}"
-        }), use_container_width=True)
+# ------------------ FUNCIÓN DE PÉRDIDA ------------------
+def _loss(x):
+    x = np.asarray(x, dtype=float)
+    return 0.503 * x / (1.0 + (0.503 * x / 125.91))
 
-        fig_loss_pcc = go.Figure()
-        fig_loss_pcc.add_trace(go.Bar(
-            x=["Dentro PCC","Fuera PCC"], y=[loss_in,loss_out],
-            name="Pérdida (%)", marker_color=["gold","lightblue"]
-        ))
-        fig_loss_pcc.update_layout(title="Contribución relativa del PCC a la pérdida total",
-                                   yaxis_title="Pérdida (%)", xaxis_title="Componente")
-        st.plotly_chart(fig_loss_pcc, use_container_width=True)
+# ------------------ CONFIGURACIÓN UI ------------------
+APP_TITLE = "PREDWEEM · v3.14 (1−Ciec + AUC + Cohortes Secuenciales + PCC)"
+st.set_page_config(page_title=APP_TITLE, layout="wide", initial_sidebar_state="expanded")
+st.title(APP_TITLE)
 
-        st.markdown(
-            f"💡 **Interpretación:** del total de pérdida estimada (**{loss_total:.2f}%**), "
-            f"aprox. **{loss_in:.2f}% ({prop_in*100:.1f}%)** ocurrió **dentro del PCC**, "
-            f"y **{loss_out:.2f}% ({prop_out*100:.1f}%)** fuera de él."
-        )
+# ------------------ CONSTANTES ------------------
+PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW = 14
+PREEM_R_MAX_AFTER_SOW_DAYS = 10
+POST_GRAM_FORWARD_DAYS = 11
+EPS_REMAIN, EPS_EXCLUDE = 1e-9, 0.99
 
+# =====================================================
+# 🔹 CARGA DE DATOS
+# =====================================================
+def sniff_sep_dec(text: str):
+    sample = text[:8000]
+    counts = {sep: sample.count(sep) for sep in [",", ";", "\t"]}
+    sep_guess = max(counts, key=counts.get)
+    dec_guess = "." if sample.count(".") >= sample.count(",") else ","
+    return sep_guess, dec_guess
+
+@st.cache_data(show_spinner=False)
+def read_raw_from_url(url: str) -> bytes:
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return r.read()
+
+def clean_numeric_series(s, decimal="."):
+    if s.dtype.kind in "if": return pd.to_numeric(s, errors="coerce")
+    t = s.astype(str).str.replace("%","",regex=False)
+    if decimal == ",": t = t.str.replace(".","",regex=False).str.replace(",",".",regex=False)
+    else: t = t.str.replace(",","",regex=False)
+    return pd.to_numeric(t, errors="coerce")
+
+def auc_time(fecha, y, mask=None):
+    f = pd.to_datetime(fecha)
+    y = np.nan_to_num(np.asarray(y, float))
+    if mask is not None:
+        f = f[mask]; y = y[mask]
+    if len(f) < 2: return 0.0
+    t = (f - f.iloc[0]).dt.days.to_numpy(float)
+    return float(np.trapz(y, t))
+
+def cap_cumulative(series, cap, active_mask):
+    y = np.asarray(series, float); out = np.zeros_like(y); cum = 0.0
+    for i in range(len(y)):
+        if active_mask[i]:
+            val = min(max(0.0, y[i]), max(0.0, cap - cum))
+            out[i] = val; cum += val
+    return out
+
+# =====================================================
+# 🔹 PANEL DE ENTRADA
+# =====================================================
+with st.sidebar:
+    st.header("Escenario de infestación")
+    MAX_PLANTS_CAP = float(st.selectbox("Tope de densidad efectiva (pl·m²)", [250, 125, 62], index=0))
+
+with st.sidebar:
+    st.header("Datos de entrada")
+    up = st.file_uploader("CSV (fecha, EMERREL diaria o EMERAC)", type=["csv"])
+    url = st.text_input("…o URL raw de GitHub", "")
+    sep_opt = st.selectbox("Delimitador", ["auto", ",", ";", "\\t"])
+    dec_opt = st.selectbox("Decimal", ["auto", ".", ","], index=0)
+    dayfirst = st.checkbox("Fecha en formato dd/mm/yyyy", True)
+    is_cumulative = st.checkbox("Mi CSV es acumulado (EMERAC)", False)
+    as_percent = st.checkbox("Valores en %", True)
+    fill_gaps = st.checkbox("Rellenar días faltantes con 0", False)
+
+if up is None and not url:
+    st.info("Subí un CSV o pegá una URL para continuar."); st.stop()
+
+try:
+    raw = up.read() if up else read_raw_from_url(url)
+    sep, dec = sniff_sep_dec(raw.decode(errors="ignore"))
+    df = pd.read_csv(io.BytesIO(raw), sep=sep, decimal=dec)
+except Exception as e:
+    st.error(f"Error al leer el archivo: {e}"); st.stop()
+
+cols = df.columns.tolist()
+c_fecha = st.selectbox("Columna de fecha", cols, index=0)
+c_valor = st.selectbox("Columna de EMERREL/EMERAC", cols, index=1 if len(cols) > 1 else 0)
+
+fechas = pd.to_datetime(df[c_fecha], dayfirst=dayfirst, errors="coerce")
+vals = clean_numeric_series(df[c_valor])
+df = pd.DataFrame({"fecha": fechas, "valor": vals}).dropna().sort_values("fecha").reset_index(drop=True)
+if fill_gaps:
+    full_idx = pd.date_range(df["fecha"].min(), df["fecha"].max(), freq="D")
+    df = df.set_index("fecha").reindex(full_idx).rename_axis("fecha").reset_index()
+    df["valor"] = df["valor"].fillna(0.0)
+
+emerrel = df["valor"].astype(float)
+if as_percent: emerrel /= 100.0
+if is_cumulative: emerrel = emerrel.diff().fillna(0.0).clip(lower=0.0)
+emerrel = emerrel.clip(lower=0.0)
+df_plot = pd.DataFrame({"fecha": df["fecha"], "EMERREL": emerrel})
+
+# =====================================================
+# 🔹 CANOPIA Y (1−Ciec)
+# =====================================================
+years = df_plot["fecha"].dt.year.dropna().astype(int)
+year_ref = int(years.mode().iloc[0]) if len(years) else dt.date.today().year
+sow_min = dt.date(year_ref, 5, 1); sow_max = dt.date(year_ref, 8, 1)
+
+with st.sidebar:
+    st.header("Siembra & Canopia")
+    sow_date = st.date_input("Fecha de siembra", value=sow_min, min_value=sow_min, max_value=sow_max)
+    mode_canopy = st.selectbox("Canopia", ["Cobertura dinámica (%)", "LAI dinámico"], index=0)
+    t_lag   = st.number_input("Días a emergencia del cultivo", 0, 60, 7, 1)
+    t_close = st.number_input("Días a cierre de entresurco", 10, 120, 45, 1)
+    cov_max = st.number_input("Cobertura máxima (%)", 10.0, 100.0, 85.0, 1.0)
+    lai_max = st.number_input("LAI máximo", 0.0, 8.0, 3.5, 0.1)
+    k_beer  = st.number_input("k (Beer–Lambert)", 0.1, 1.2, 0.6, 0.05)
+
+with st.sidebar:
+    st.header("Ciec (competencia del cultivo)")
+    use_ciec = st.checkbox("Activar cálculo de Ciec", value=True)
+    Ca = st.number_input("Densidad real Ca (pl/m²)", 50, 700, 250, 10)
+    Cs = st.number_input("Densidad estándar Cs (pl/m²)", 50, 700, 250, 10)
+    LAIhc = st.number_input("LAIhc (cultivo altamente competitivo)", 0.5, 10.0, 3.5, 0.1)
+
+# --- Función de canopia ---
+def compute_canopy(fechas, sow_date, mode_canopy, t_lag, t_close, cov_max, lai_max, k_beer):
+    days_since = np.array([(pd.Timestamp(d).date() - sow_date).days for d in fechas])
+    def logistic_between(days, start, end, ymax):
+        if end <= start: end = start + 1
+        t_mid = 0.5*(start+end); r = 4.0/max(1.0,(end-start))
+        return ymax/(1.0+np.exp(-r*(days-t_mid)))
+    if mode_canopy == "Cobertura dinámica (%)":
+        fc = np.where(days_since < t_lag, 0.0, logistic_between(days_since, t_lag, t_close, cov_max/100.0))
+        fc = np.clip(fc,0,1); LAI = -np.log(np.clip(1-fc,1e-9,1))/k_beer
+        LAI = np.clip(LAI,0,lai_max)
+    else:
+        LAI = np.where(days_since < t_lag, 0.0, logistic_between(days_since, t_lag, t_close, lai_max))
+        LAI = np.clip(LAI,0,lai_max); fc = 1-np.exp(-k_beer*LAI)
+    return fc, LAI
+
+FC, LAI = compute_canopy(df_plot["fecha"], sow_date, mode_canopy, int(t_lag), int(t_close),
+                         float(cov_max), float(lai_max), float(k_beer))
+
+if use_ciec:
+    Ca_safe, Cs_safe = max(Ca,1e-6), max(Cs,1e-6)
+    Ciec = np.clip((LAI / max(1e-6, LAIhc)) * (Ca_safe / Cs_safe), 0, 1)
+else:
+    Ciec = np.zeros_like(LAI)
+
+one_minus_Ciec = np.clip(1.0 - Ciec, 0.0, 1.0)
+df_ciec = pd.DataFrame({"fecha": df_plot["fecha"], "Ciec": Ciec})
+
+# =====================================================
+# 🔹 PERIODO CRÍTICO DE COMPETENCIA (PCC)
+# =====================================================
+with st.sidebar:
+    st.header("Periodo Crítico de Competencia (PCC)")
+    PCC_INI = st.date_input("Inicio PCC", value=sow_date + timedelta(days=60))
+    PCC_FIN = st.date_input("Fin PCC", value=sow_date + timedelta(days=90))
+    SENS_FACTOR = st.slider("Factor de sensibilidad (multiplica (1−Ciec) dentro PCC)", 1.0, 10.0, 5.0, 0.5)
+
+# =====================================================
+# 🔹 ESTADOS FENOLÓGICOS SECUENCIALES
+# =====================================================
+ts = pd.to_datetime(df_plot["fecha"])
+mask_since_sow = (ts.dt.date >= sow_date)
+births = np.where(mask_since_sow.to_numpy(), df_plot["EMERREL"].to_numpy(), 0.0)
+
+T12 = st.sidebar.number_input("Duración S1→S2 (días)", 1, 60, 10)
+T23 = st.sidebar.number_input("Duración S2→S3 (días)", 1, 60, 15)
+T34 = st.sidebar.number_input("Duración S3→S4 (días)", 1, 60, 20)
+
+S1, S2, S3, S4 = births.copy(), np.zeros_like(births), np.zeros_like(births), np.zeros_like(births)
+for i in range(len(births)):
+    if i - int(T12) >= 0: S1[i - int(T12)] -= births[i - int(T12)]; S2[i] += births[i - int(T12)]
+    if i - (int(T12)+int(T23)) >= 0: S2[i - (int(T12)+int(T23))] -= births[i - (int(T12)+int(T23))]; S3[i] += births[i - (int(T12)+int(T23))]
+    if i - (int(T12)+int(T23)+int(T34)) >= 0: S3[i - (int(T12)+int(T23)+int(T34))] -= births[i - (int(T12)+int(T23)+int(T34))]; S4[i] += births[i - (int(T12)+int(T23)+int(T34))]
+
+S1, S2, S3, S4 = [np.clip(x, 0.0, None) for x in (S1,S2,S3,S4)]
+emeac = np.cumsum(births)
+scale = np.minimum(np.divide(np.clip(emeac,1e-9,None), np.clip(S1+S2+S3+S4,1e-9,None)), 1.0)
+S1*=scale; S2*=scale; S3*=scale; S4*=scale
+
+FC_S = {"S1":0.1, "S2":0.3, "S3":0.6, "S4":1.0}
+auc_cruda = auc_time(ts, df_plot["EMERREL"], mask_since_sow)
+factor_area = MAX_PLANTS_CAP / auc_cruda if auc_cruda > 0 else 1.0
+
+# Aplicar supresión (1−Ciec) × sensibilidad PCC
+dates_dt = ts.dt.date.to_numpy()
+sens_factor = np.array([SENS_FACTOR if PCC_INI <= d <= PCC_FIN else 1.0 for d in dates_dt])
+one_minus_sens = np.clip(one_minus_Ciec * sens_factor, 0.0, 1.0)
+
+S1_pl = np.where(mask_since_sow, S1 * one_minus_sens * FC_S["S1"] * factor_area, 0.0)
+S2_pl = np.where(mask_since_sow, S2 * one_minus_sens * FC_S["S2"] * factor_area, 0.0)
+S3_pl = np.where(mask_since_sow, S3 * one_minus_sens * FC_S["S3"] * factor_area, 0.0)
+S4_pl = np.where(mask_since_sow, S4 * one_minus_sens * FC_S["S4"] * factor_area, 0.0)
+
+st.markdown("✅ Datos, canopia y estados listos. A continuación se ejecutará el módulo de **optimización**.")
 
 
 # =====================================================
