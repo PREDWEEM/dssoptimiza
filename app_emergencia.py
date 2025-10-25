@@ -237,7 +237,7 @@ with st.sidebar:
     pcc_def_fin = (sow_date + timedelta(days=60))
     PCC_INI = st.date_input("PCC inicio", value=pcc_def_ini, min_value=df_plot["fecha"].min().date(), max_value=df_plot["fecha"].max().date())
     PCC_FIN = st.date_input("PCC fin",    value=pcc_def_fin, min_value=df_plot["fecha"].min().date(), max_value=df_plot["fecha"].max().date())
-    SENS_FACTOR = st.slider("Factor de sensibilidad en PCC", 0.20, 2.00, 1.00, 0.05,
+    SENS_FACTOR = st.slider("Factor de sensibilidad en PCC", 1.00, 5.00, 1.00, 0.05,
                             help="Multiplica (1−Ciec) SOLO dentro del PCC. <1 reduce presión; >1 la aumenta.")
 
 if PCC_FIN < PCC_INI:
