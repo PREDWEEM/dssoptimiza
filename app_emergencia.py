@@ -621,26 +621,26 @@ with st.sidebar:
     st.header("Optimización (variables habilitadas)")
     sow_search_from = st.date_input("Buscar siembra desde", value=sow_min, min_value=sow_min, max_value=sow_max, key="sow_from")
     sow_search_to   = st.date_input("Buscar siembra hasta",  value=sow_max, min_value=sow_min, max_value=sow_max, key="sow_to")
-    sow_step_days   = st.number_input("Paso de siembra (días)", 1, 30, 7, 1)
+    sow_step_days   = st.number_input("Paso de siembra (días)", 1, 30, 2, 1)
 
     use_preR_opt    = st.checkbox("Incluir presiembra + residual (≤ siembra−14; S1–S2)", value=True)
     use_preemR_opt  = st.checkbox("Incluir preemergente + residual (siembra..siembra+10; S1–S2)", value=True)
     use_post_selR_opt = st.checkbox("Incluir post + residual (≥ siembra + 20; S1–S4)", value=True)
     use_post_gram_opt = st.checkbox(f"Incluir graminicida post (+{POST_GRAM_FORWARD_DAYS-1}d; S1–S3)", value=True)
 
-    ef_preR_opt      = st.slider("Eficiencia presiembraR (%)", 0, 100, 70, 1)   if use_preR_opt else 0
-    ef_preemR_opt    = st.slider("Eficiencia preemergenteR (%)", 0, 100, 70, 1) if use_preemR_opt else 0
-    ef_post_selR_opt = st.slider("Eficiencia post residual (%)", 0, 100, 70, 1) if use_post_selR_opt else 0
-    ef_post_gram_opt = st.slider("Eficiencia graminicida post (%)", 0, 100, 65, 1) if use_post_gram_opt else 0
+    ef_preR_opt      = st.slider("Eficiencia presiembraR (%)", 0, 100, 90, 1)   if use_preR_opt else 0
+    ef_preemR_opt    = st.slider("Eficiencia preemergenteR (%)", 0, 100, 90, 1) if use_preemR_opt else 0
+    ef_post_selR_opt = st.slider("Eficiencia post residual (%)", 0, 100, 90, 1) if use_post_selR_opt else 0
+    ef_post_gram_opt = st.slider("Eficiencia graminicida post (%)", 0, 100, 90, 1) if use_post_gram_opt else 0
 
-    preR_min_back  = st.number_input("PresiembraR: buscar hasta X días antes de siembra", 14, 120, 45, 1)
-    preR_step_days = st.number_input("Paso fechas PRESIEMBRA (días)", 1, 30, 7, 1)
-    preem_step_days = st.number_input("Paso fechas PREEMERGENTE (días)", 1, 10, 3, 1)
+    preR_min_back  = st.number_input("PresiembraR: buscar hasta X días antes de siembra", 14, 120, 14, 1)
+    preR_step_days = st.number_input("Paso fechas PRESIEMBRA (días)", 1, 30, 2, 1)
+    preem_step_days = st.number_input("Paso fechas PREEMERGENTE (días)", 1, 10, 2, 1)
 
     post_days_fw   = st.number_input("Post: días después de siembra (máximo)", 20, 180, 60, 1)
-    post_step_days = st.number_input("Paso fechas POST (días)", 1, 30, 7, 1)
+    post_step_days = st.number_input("Paso fechas POST (días)", 1, 30, 2, 1)
 
-    res_min, res_max = st.slider("Residualidad (min–max) [días]", min_value=15, max_value=120, value=(30, 60), step=5)
+    res_min, res_max = st.slider("Residualidad (min–max) [días]", min_value=15, max_value=120, value=(40, 45), step=5)
     res_step = st.number_input("Paso de residualidad (días)", min_value=1, max_value=30, value=5, step=1)
 
     optimizer = st.selectbox("Optimizador", ["Grid (combinatorio)", "Búsqueda aleatoria", "Recocido simulado"], index=0)
