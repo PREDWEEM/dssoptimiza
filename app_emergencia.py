@@ -451,10 +451,11 @@ def weights_residual(start_date, dias):
 # ------------------ APORTES por estado ------------------
 if factor_area_to_plants is not None:
     ms = mask_since_sow.to_numpy()
-    S1_pl = np.where(ms, S1_arr * one_minus_Ciec * FC_S["S1"] * factor_area_to_plants, 0.0)
-    S2_pl = np.where(ms, S2_arr * one_minus_Ciec * FC_S["S2"] * factor_area_to_plants, 0.0)
-    S3_pl = np.where(ms, S3_arr * one_minus_Ciec * FC_S["S3"] * factor_area_to_plants, 0.0)
-    S4_pl = np.where(ms, S4_arr * one_minus_Ciec * FC_S["S4"] * factor_area_to_plants, 0.0)
+    S1_pl = np.where(ms, S1_arr * one_minus_Ciec_sens * FC_S["S1"] * factor_area_to_plants, 0.0)
+    S2_pl = np.where(ms, S2_arr * one_minus_Ciec_sens * FC_S["S2"] * factor_area_to_plants, 0.0)
+    S3_pl = np.where(ms, S3_arr * one_minus_Ciec_sens * FC_S["S3"] * factor_area_to_plants, 0.0)
+    S4_pl = np.where(ms, S4_arr * one_minus_Ciec_sens * FC_S["S4"] * factor_area_to_plants, 0.0)
+
 
     # controles (inicialmente 1.0)
     ctrl_S1 = np.ones_like(fechas_d, float); ctrl_S2 = np.ones_like(fechas_d, float)
