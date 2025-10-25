@@ -814,6 +814,57 @@ def recompute_for_sow(sow_d: dt.date, T12: int, T23: int, T34: int):
 # ------------------------------------------------------
 # [ Usa recompute_for_sow() como fuente → sensibilidad PCC se incorpora automáticamente ]
 
- 
+         # ===========================================================
+        # 🔍 Descomposición de pérdida: dentro y fuera del PCC
+        # ===========================================================
+        st.subheader("📉 Descomposición de pérdida (PCC vs fuera del PCC)")
+
+        # Recuperar AUC dentro y fuera del PCC del entorno recomputado
+        AUC_in  = float(envb["AUC_in"])
+        AUC_out = float(envb["AUC_out"])
+        AUC_tot = AUC_in + AUC_out if (AUC_in + AUC_out) > 0 else 1.0
+
+        # Calcular pérdida proporcional
+        loss_total = best["loss_pct"]
+        prop_in  = AUC_in / AUC_tot
+        prop_out = AUC_out / AUC_tot
+        loss_in  = loss_total * prop_in
+        loss_out = loss_total * prop_out
+
+        # Mostrar tabla resumen
+        df_loss = pd.DataFrame({
+            "Componente": ["Dentro PCC", "Fuera PCC", "Total"],
+            "AUC ponderado": [AUC_in, AUC_out, AUC_tot],
+            "Proporción (%)": [prop_in*100, prop_out*100, 100.0],
+            "Pérdida (%)": [loss_in, loss_out, loss_total]
+        })
+
+        st.dataframe(df_loss.style.format({
+            "AUC ponderado": "{:.2f}",
+            "Proporción (%)": "{:.1f}",
+            "Pérdida (%)": "{:.2f}"
+        }), use_container_width=True)
+
+        # Visualización comparativa
+        fig_loss_pcc = go.Figure()
+        fig_loss_pcc.add_trace(go.Bar(
+            x=["Dentro PCC", "Fuera PCC"],
+            y=[loss_in, loss_out],
+            name="Pérdida (%)",
+            marker_color=["gold", "lightblue"]
+        ))
+        fig_loss_pcc.update_layout(
+            title="Contribución relativa del PCC a la pérdida total",
+            yaxis_title="Pérdida (%)",
+            xaxis_title="Componente"
+        )
+        st.plotly_chart(fig_loss_pcc, use_container_width=True)
+
+        st.markdown(
+            f"💡 **Interpretación:** Del total de pérdida estimada (**{loss_total:.2f}%**), "
+            f"aproximadamente **{loss_in:.2f}% ({prop_in*100:.1f}%)** ocurrió **dentro del PCC**, "
+            f"y **{loss_out:.2f}% ({prop_out*100:.1f}%)** fuera de él."
+        )
+
     
 
