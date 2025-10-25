@@ -228,6 +228,31 @@ else:
 df_ciec = pd.DataFrame({"fecha": df_plot["fecha"], "Ciec": Ciec})
 one_minus_Ciec = np.clip((1.0 - Ciec).astype(float), 0.0, 1.0)
 
+# ===========================================================
+# 🌾 Sensibilidad temporal del cultivo (Periodo Crítico)
+# ===========================================================
+# Supuesto: el cultivo es 5× más sensible a la competencia
+# durante el PCC (por defecto: 8 de octubre – 4 de noviembre).
+
+PCC_INI = dt.date(df_plot["fecha"].dt.year.mode()[0], 10, 8)
+PCC_FIN = dt.date(df_plot["fecha"].dt.year.mode()[0], 11, 4)
+SENS_FACTOR = 5.0  # sensibilidad relativa durante el PCC
+
+# Vector de sensibilidad diaria
+dates_dt = [pd.Timestamp(d).date() for d in df_plot["fecha"]]
+sens_factor = np.ones(len(dates_dt))
+for i, d in enumerate(dates_dt):
+    if PCC_INI <= d <= PCC_FIN:
+        sens_factor[i] = SENS_FACTOR
+
+# Multiplicador final (1−Ciec) × Sensibilidad
+one_minus_Ciec_sens = np.clip(one_minus_Ciec * sens_factor, 0.0, None)
+
+# (Opcional) Mostrar en el gráfico o en sidebar
+st.sidebar.subheader("Periodo Crítico de Competencia (PCC)")
+st.sidebar.write(f"**Inicio:** {PCC_INI} · **Fin:** {PCC_FIN}")
+st.sidebar.write(f"**Sensibilidad relativa:** ×{SENS_FACTOR:.1f}")
+
 # ------------------ ESTADOS FENOLÓGICOS SECUENCIALES (S1→S4) ------------------
 # Representan fases fenológicas del mismo grupo de individuos (no cohortes).
 # Cada individuo progresa de S1 a S4 con duraciones medias configurables.
