@@ -736,6 +736,7 @@ def compute_ciec_for(sd):
 
 def recompute_for_sow(sow_d: dt.date, T12: int, T23: int, T34: int):
     mask_since = (ts_all.dt.date >= sow_d)
+    
     one_minus = compute_ciec_for(sow_d)
     births = np.where(mask_since.to_numpy(), emerrel_all, 0.0)
 
@@ -752,7 +753,6 @@ else:
 one_minus_sens = np.clip(one_minus * sens_factor, 0.0, None)
 
    
-
     # ------------------ ESTADOS FENOLÓGICOS SECUENCIALES (S1→S4) ------------------
     S1 = births.copy()
     S2 = np.zeros_like(births)
@@ -795,10 +795,11 @@ one_minus_sens = np.clip(one_minus * sens_factor, 0.0, None)
         return None
 
     factor_area = MAX_PLANTS_CAP / auc_cruda_loc
-    S1_pl = np.where(mask_since, S1 * one_minus * 0.1 * factor_area, 0.0)
-    S2_pl = np.where(mask_since, S2 * one_minus * 0.3 * factor_area, 0.0)
-    S3_pl = np.where(mask_since, S3 * one_minus * 0.6 * factor_area, 0.0)
-    S4_pl = np.where(mask_since, S4 * one_minus * 1.0 * factor_area, 0.0)
+    S1_pl = np.where(mask_since, S1 * one_minus_sens * 0.1 * factor_area, 0.0)
+    S2_pl = np.where(mask_since, S2 * one_minus_sens * 0.3 * factor_area, 0.0)
+    S3_pl = np.where(mask_since, S3 * one_minus_sens * 0.6 * factor_area, 0.0)
+    S4_pl = np.where(mask_since, S4 * one_minus_sens * 1.0 * factor_area, 0.0)
+
 
     base_pl_daily = np.where(mask_since, emerrel_all * factor_area, 0.0)
     base_pl_daily_cap = cap_cumulative(base_pl_daily, MAX_PLANTS_CAP, mask_since.to_numpy())
