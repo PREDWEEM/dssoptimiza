@@ -1,213 +1,39 @@
-# -*- coding: utf-8 -*-
-# ===============================================================
-# 🌾 WeedCropSystem — v3.14 (Sensibilidad PCC + Cohortes secuenciales)
-# ---------------------------------------------------------------
-# - Pérdida de rinde basada en AUC (competencia acumulada)
-# - Gateo jerárquico: preR → preemR → postR → gram
-# - Supuestos:
-#     · Lote limpio al momento de la siembra (sin malezas previas)
-#     · Estados S1–S4 con distinta presión de competencia
-#     · Periodo crítico de competencia fijo (8/oct – 4/nov)
-# - α = 0.503 · Lmax = 125.91
-# ===============================================================
+        # ===========================================================
+        # 🔍 Descomposición de pérdida: dentro y fuera del PCC
+        # ===========================================================
+        st.subheader("📉 Descomposición de pérdida (PCC vs fuera del PCC)")
 
-import io, re, math, datetime as dt, itertools, random
-import numpy as np
-import pandas as pd
-import streamlit as st
-import plotly.graph_objects as go
-from datetime import timedelta
+        AUC_in  = float(envb["AUC_in"]) if "AUC_in" in envb else 0
+        AUC_out = float(envb["AUC_out"]) if "AUC_out" in envb else 0
+        AUC_tot = AUC_in + AUC_out if (AUC_in + AUC_out) > 0 else 1.0
+        loss_total = best["loss_pct"]
+        prop_in, prop_out = AUC_in/AUC_tot, AUC_out/AUC_tot
+        loss_in, loss_out = loss_total*prop_in, loss_total*prop_out
 
-# ---------- CONFIGURACIÓN ----------
-st.set_page_config(page_title="🌾 PREDWEEM — v3.14 · Sensibilidad PCC", layout="wide")
-st.title("🌾 PREDWEEM — WeedCropSystem v3.14 · Sensibilidad PCC (8/oct–4/nov)")
+        df_loss = pd.DataFrame({
+            "Componente": ["Dentro PCC","Fuera PCC","Total"],
+            "AUC ponderado": [AUC_in,AUC_out,AUC_tot],
+            "Proporción (%)": [prop_in*100,prop_out*100,100],
+            "Pérdida (%)": [loss_in,loss_out,loss_total]
+        })
+        st.dataframe(df_loss.style.format({
+            "AUC ponderado":"{:.2f}","Proporción (%)":"{:.1f}","Pérdida (%)":"{:.2f}"
+        }), use_container_width=True)
 
-# ---------- PARÁMETROS CALIBRADOS ----------
-ALPHA = 0.503
-LMAX  = 125.91
-MAX_PLANTS_CAP = 250.0
-EPS_REMAIN = 1e-4
-EPS_EXCLUDE = 0.99
+        fig_loss_pcc = go.Figure()
+        fig_loss_pcc.add_trace(go.Bar(
+            x=["Dentro PCC","Fuera PCC"], y=[loss_in,loss_out],
+            name="Pérdida (%)", marker_color=["gold","lightblue"]
+        ))
+        fig_loss_pcc.update_layout(title="Contribución relativa del PCC a la pérdida total",
+                                   yaxis_title="Pérdida (%)", xaxis_title="Componente")
+        st.plotly_chart(fig_loss_pcc, use_container_width=True)
 
-def _loss(x):
-    """Función hiperbólica de pérdida de rinde."""
-    x = np.clip(x, 0.0, MAX_PLANTS_CAP)
-    return ALPHA * x / (1.0 + (ALPHA * x / LMAX))
-
-# ---------- ENTRADA DE DATOS ----------
-st.sidebar.header("Entrada de datos")
-file = st.sidebar.file_uploader("📂 Subí el archivo meteo_history.csv", type=["csv"])
-if file is None:
-    st.info("Esperando archivo meteo_history.csv…")
-    st.stop()
-
-df = pd.read_csv(file)
-if "fecha" not in df.columns:
-    df.columns = [c.lower() for c in df.columns]
-df["fecha"] = pd.to_datetime(df["fecha"])
-df = df.sort_values("fecha").reset_index(drop=True)
-
-# ---------- EMERGENCIA RELATIVA / ACUMULADA ----------
-st.sidebar.subheader("Modelo de emergencia (simulado)")
-st.sidebar.caption("En producción se reemplaza por la red neuronal calibrada")
-
-df["EMERREL"] = np.clip(
-    np.sin(np.linspace(0, np.pi, len(df))) + np.random.normal(0, 0.02, len(df)),
-    0, 1
-)
-df["EMEAC"] = np.cumsum(df["EMERREL"])
-df["EMEAC"] = df["EMEAC"] / df["EMEAC"].max() * 100
-
-# ---------- FECHAS DE SIEMBRA ----------
-st.sidebar.subheader("Configuración de siembra")
-sow_min = df["fecha"].min().date()
-sow_max = df["fecha"].max().date()
-sow_date = st.sidebar.date_input("Fecha de siembra base", value=sow_min,
-                                 min_value=sow_min, max_value=sow_max)
-
-# ---------- CONFIG. CANOPY ----------
-st.sidebar.subheader("Cobertura y competencia del cultivo")
-mode_canopy = st.sidebar.selectbox("Modo de crecimiento", ["Logístico", "Lineal"], index=0)
-t_lag = st.sidebar.number_input("t_lag (días hasta inicio crecimiento)", 0, 40, 10)
-t_close = st.sidebar.number_input("t_close (días hasta cierre)", 10, 120, 45)
-cov_max = st.sidebar.number_input("Cobertura máxima (0–1)", 0.0, 1.0, 0.95, 0.01)
-lai_max = st.sidebar.number_input("LAI máximo", 0.0, 10.0, 5.0, 0.1)
-k_beer  = st.sidebar.number_input("Coeficiente Beer–Lambert (k)", 0.1, 1.5, 0.65, 0.01)
-Ca = st.sidebar.number_input("Ca (cobertura cultivo)", 0.1, 10.0, 1.0, 0.1)
-Cs = st.sidebar.number_input("Cs (cobertura maleza)", 0.1, 10.0, 1.0, 0.1)
-LAIhc = st.sidebar.number_input("LAIhc (referencia)", 0.1, 10.0, 3.0, 0.1)
-use_ciec = st.sidebar.checkbox("Usar (1−Ciec) dinámico", value=True)
-
-# ---------- PERIODO CRÍTICO DE COMPETENCIA (PCC) ----------
-st.sidebar.markdown("---")
-st.sidebar.header("Periodo Crítico de Competencia (PCC)")
-st.sidebar.markdown("Fijo: **8/oct – 4/nov** (mayor sensibilidad del cultivo)")
-
-PCC_INI = dt.date(2025, 10, 8)
-PCC_FIN = dt.date(2025, 11, 4)
-SENS_FACTOR = 1.25
-PCC_ON = True
-
-globals()["PCC_INI"] = PCC_INI
-globals()["PCC_FIN"] = PCC_FIN
-globals()["SENS_FACTOR"] = SENS_FACTOR
-globals()["PCC_ON"] = PCC_ON
-
-# ---------- FUNCIONES AUXILIARES ----------
-def compute_canopy(ts_all, sow_d, mode, t_lag, t_close, cov_max, lai_max, k_beer):
-    """Simulación de cobertura y LAI."""
-    days = (ts_all - pd.to_datetime(sow_d)).dt.days.values
-    days = np.clip(days, 0, None)
-    if mode == "Logístico":
-        g = 1 / (1 + np.exp(-0.2 * (days - (t_close / 2))))
-        FCx = cov_max * g
-    else:
-        g = np.clip((days - t_lag) / max(1, t_close - t_lag), 0, 1)
-        FCx = cov_max * g
-    LAIx = lai_max * (1 - np.exp(-k_beer * g))
-    return FCx, LAIx
-
-def auc_time(ts, y, mask=None):
-    if mask is None: mask = np.ones(len(y), bool)
-    x = np.arange(len(y))[mask]; y = np.array(y)[mask]
-    if len(x) < 2: return 0.0
-    return np.trapz(y, x)
-
-def cap_cumulative(series, cap, mask):
-    out = np.zeros_like(series)
-    acc = 0.0
-    for i, (v, m) in enumerate(zip(series, mask)):
-        if m: acc = min(cap, acc + v)
-        out[i] = acc
-    return out
-
-# ---------- CANOPY Y CIEC ----------
-ts_all = df["fecha"]
-FCx, LAIx = compute_canopy(ts_all, sow_date, mode_canopy, t_lag, t_close, cov_max, lai_max, k_beer)
-if use_ciec:
-    Ca_safe = max(1e-6, Ca)
-    Cs_safe = max(1e-6, Cs)
-    Ciec = np.clip((LAIx / max(1e-6, LAIhc)) * (Ca_safe / Cs_safe), 0.0, 1.0)
-else:
-    Ciec = np.zeros_like(LAIx)
-one_minus_Ciec = np.clip(1.0 - Ciec, 0.0, 1.0)
-
-# ---------- APLICAR SENSIBILIDAD PCC ----------
-def compute_sensitivity(ts_all):
-    sens = np.ones(len(ts_all))
-    if PCC_ON:
-        mask_pcc = (ts_all.dt.date >= PCC_INI) & (ts_all.dt.date <= PCC_FIN)
-        sens[mask_pcc] = SENS_FACTOR
-    return sens
-
-sens_factor = compute_sensitivity(ts_all)
-one_minus_sens = one_minus_Ciec * sens_factor
-
-# ---------- ESTADOS S1–S4 (SECUENCIALES) ----------
-duraciones = {"T12": 10, "T23": 15, "T34": 20}
-births = df["EMERREL"].to_numpy()
-S1 = births.copy()
-S2 = np.zeros_like(S1)
-S3 = np.zeros_like(S1)
-S4 = np.zeros_like(S1)
-for i in range(len(births)):
-    if i - duraciones["T12"] >= 0:
-        moved = births[i - duraciones["T12"]]
-        S1[i - duraciones["T12"]] -= moved
-        S2[i] += moved
-    if i - (duraciones["T12"] + duraciones["T23"]) >= 0:
-        moved = births[i - (duraciones["T12"] + duraciones["T23"])]
-        S2[i - (duraciones["T12"] + duraciones["T23"])] -= moved
-        S3[i] += moved
-    if i - (duraciones["T12"] + duraciones["T23"] + duraciones["T34"]) >= 0:
-        moved = births[i - (duraciones["T12"] + duraciones["T23"] + duraciones["T34"])]
-        S3[i - (duraciones["T12"] + duraciones["T23"] + duraciones["T34"])] -= moved
-        S4[i] += moved
-
-S1 = np.clip(S1, 0.0, None)
-S2 = np.clip(S2, 0.0, None)
-S3 = np.clip(S3, 0.0, None)
-S4 = np.clip(S4, 0.0, None)
-
-# ---------- PESOS DE COMPETENCIA ----------
-FC_S = {"S1": 0.1, "S2": 0.3, "S3": 0.6, "S4": 1.0}
-S1_pl = S1 * one_minus_sens * FC_S["S1"]
-S2_pl = S2 * one_minus_sens * FC_S["S2"]
-S3_pl = S3 * one_minus_sens * FC_S["S3"]
-S4_pl = S4 * one_minus_sens * FC_S["S4"]
-
-plantas_supresion = S1_pl + S2_pl + S3_pl + S4_pl
-plantas_cap = cap_cumulative(plantas_supresion, MAX_PLANTS_CAP, np.ones(len(S1), bool))
-X2 = np.sum(plantas_cap)
-LossX2 = _loss(X2)
-
-# ---------- GRÁFICOS ----------
-st.subheader("📈 Emergencia y competencia (1−Ciec + PCC)")
-fig = go.Figure()
-fig.add_trace(go.Bar(x=df["fecha"], y=df["EMERREL"], name="EMERREL"))
-fig.add_trace(go.Scatter(x=df["fecha"], y=one_minus_Ciec, name="1−Ciec", yaxis="y2"))
-fig.add_trace(go.Scatter(x=df["fecha"], y=sens_factor, name="Sensibilidad PCC", yaxis="y2", line=dict(dash="dot")))
-fig.update_layout(
-    xaxis_title="Fecha", yaxis_title="EMERREL",
-    yaxis2=dict(overlaying="y", side="right", title="(1−Ciec) / Sens."),
-    title="Emergencia + Competencia del cultivo + Sensibilidad PCC"
-)
-st.plotly_chart(fig, use_container_width=True)
-
-st.markdown(f"""
-**Densidad efectiva (x):** {X2:.1f} pl·m²  
-**Pérdida estimada:** {_loss(X2):.2f} %  
-**Periodo Crítico:** {PCC_INI.strftime('%d %b')} → {PCC_FIN.strftime('%d %b')}  
-**Factor sensibilidad:** × {SENS_FACTOR}
-""")
-
-st.success("✅ Simulación lista. Continuar con el bloque de optimización ↓")
-
-
-
-
-
-
+        st.markdown(
+            f"💡 **Interpretación:** del total de pérdida estimada (**{loss_total:.2f}%**), "
+            f"aprox. **{loss_in:.2f}% ({prop_in*100:.1f}%)** ocurrió **dentro del PCC**, "
+            f"y **{loss_out:.2f}% ({prop_out*100:.1f}%)** fuera de él."
+        )
 
 
 
