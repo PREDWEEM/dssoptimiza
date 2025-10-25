@@ -182,7 +182,7 @@ with st.sidebar:
     t_lag   = st.number_input("Días a emergencia del cultivo (lag)", 0, 60, 7, 1)
     t_close = st.number_input("Días a cierre de entresurco", 10, 120, 45, 1)
     cov_max = st.number_input("Cobertura máxima (%)", 10.0, 100.0, 85.0, 1.0)
-    lai_max = st.number_input("LAI máximo", 0.0, 8.0, 3.5, 0.1)
+    lai_max = st.number_input("LAI máximo", 0.0, 8.0, 3.0, 0.1)
     k_beer  = st.number_input("k (Beer–Lambert)", 0.1, 1.2, 0.6, 0.05)
 
 with st.sidebar:
@@ -190,7 +190,7 @@ with st.sidebar:
     use_ciec = st.checkbox("Calcular y mostrar Ciec", value=True)
     Ca = st.number_input("Densidad real Ca (pl/m²)", 50, 700, 250, 10)
     Cs = st.number_input("Densidad estándar Cs (pl/m²)", 50, 700, 250, 10)
-    LAIhc = st.number_input("LAIhc (escenario altamente competitivo)", 0.5, 10.0, 3.5, 0.1)
+    LAIhc = st.number_input("LAIhc (escenario altamente competitivo)", 0.5, 10.0, 6.0, 0.1)
 
 if not (sow_min <= sow_date <= sow_max):
     st.error("La fecha de siembra debe estar entre el 1 de mayo y el 1 de julio."); st.stop()
@@ -321,7 +321,7 @@ with st.sidebar:
 
     preR = st.checkbox("Selectivo + residual (presiembra)", value=False,
                        help="Solo permitido hasta siembra−14 días. Actúa S1–S2.")
-    preR_days = st.slider("Residualidad presiembra (días)", 15, 120, 45, 1, disabled=not preR)
+    preR_days = st.slider("Residualidad presiembra (días)", 15, 120, 14, 1, disabled=not preR)
     preR_max = (sow_date - timedelta(days=PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW))
     preR_date = st.date_input("Fecha selectivo + residual (presiembra)",
                               value=min(min_date, preR_max),
@@ -385,10 +385,10 @@ with st.sidebar:
     st.header("Eficiencia de control (%)")
     ef_pre_glifo   = st.slider("Glifosato (pre, 1d)", 0, 100, 90, 1) if pre_glifo else 0
     ef_pre_selNR   = st.slider(f"Selectivo no residual (pre, {NR_DAYS_DEFAULT}d)", 0, 100, 60, 1) if pre_selNR else 0
-    ef_preR        = st.slider("Selectivo + residual (presiembra)", 0, 100, 70, 1) if preR else 0
-    ef_preemR      = st.slider("Selectivo + residual (preemergente)", 0, 100, 70, 1) if preemR else 0
-    ef_post_gram   = st.slider(f"Graminicida (post, +10d)", 0, 100, 65, 1) if post_gram else 0
-    ef_post_selR   = st.slider("Selectivo + residual (post)", 0, 100, 70, 1) if post_selR else 0
+    ef_preR        = st.slider("Selectivo + residual (presiembra)", 0, 100, 90, 1) if preR else 0
+    ef_preemR      = st.slider("Selectivo + residual (preemergente)", 0, 100, 90, 1) if preemR else 0
+    ef_post_gram   = st.slider(f"Graminicida (post, +10d)", 0, 100, 90, 1) if post_gram else 0
+    ef_post_selR   = st.slider("Selectivo + residual (post)", 0, 100, 90, 1) if post_selR else 0
 
 # ------------------ Decaimiento opcional ------------------
 with st.sidebar:
