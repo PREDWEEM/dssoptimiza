@@ -739,6 +739,20 @@ def recompute_for_sow(sow_d: dt.date, T12: int, T23: int, T34: int):
     one_minus = compute_ciec_for(sow_d)
     births = np.where(mask_since.to_numpy(), emerrel_all, 0.0)
 
+# --- NUEVO: Sensibilidad PCC ---
+dates_dt = [pd.Timestamp(d).date() for d in ts_all]
+sens_factor = np.ones(len(dates_dt), dtype=float)
+if "PCC_INI" in globals() and "PCC_FIN" in globals() and "SENS_FACTOR" in globals():
+    for i, d in enumerate(dates_dt):
+        if PCC_INI <= d <= PCC_FIN:
+            sens_factor[i] = float(SENS_FACTOR)
+else:
+    # fallback por si no se definió en la interfaz
+    sens_factor[:] = 1.0
+one_minus_sens = np.clip(one_minus * sens_factor, 0.0, None)
+
+   
+
     # ------------------ ESTADOS FENOLÓGICOS SECUENCIALES (S1→S4) ------------------
     S1 = births.copy()
     S2 = np.zeros_like(births)
