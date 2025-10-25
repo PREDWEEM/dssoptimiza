@@ -218,6 +218,13 @@ S4_pl = np.where(mask_since_sow, S4 * one_minus_sens * FC_S["S4"] * factor_area,
 
 st.markdown("✅ Datos, canopia y estados listos. A continuación se ejecutará el módulo de **optimización**.")
 
+# =====================================================
+# 🔹 INICIALIZACIÓN DE VARIABLES DE SESIÓN (para evitar AttributeError)
+# =====================================================
+if "opt_running" not in st.session_state:
+    st.session_state.opt_running = False
+if "opt_stop" not in st.session_state:
+    st.session_state.opt_stop = False
 
 # =====================================================
 #                OPTIMIZACIÓN
