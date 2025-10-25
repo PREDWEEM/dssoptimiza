@@ -271,9 +271,6 @@ with st.expander("Ver curva de sensibilidad temporal (PCC)"):
                            yaxis=dict(range=[0, max(1.2, SENS_FACTOR+0.5)]))
     st.plotly_chart(fig_sens, use_container_width=True)
 
-
-
-
 # ------------------ ESTADOS FENOLÓGICOS SECUENCIALES (S1→S4) ------------------
 # Representan fases fenológicas del mismo grupo de individuos (no cohortes).
 # Cada individuo progresa de S1 a S4 con duraciones medias configurables.
@@ -476,6 +473,7 @@ if factor_area_to_plants is not None:
     S2_pl = np.where(ms, S2_arr * one_minus_Ciec_sens * FC_S["S2"] * factor_area_to_plants, 0.0)
     S3_pl = np.where(ms, S3_arr * one_minus_Ciec_sens * FC_S["S3"] * factor_area_to_plants, 0.0)
     S4_pl = np.where(ms, S4_arr * one_minus_Ciec_sens * FC_S["S4"] * factor_area_to_plants, 0.0)
+
 
 
     # controles (inicialmente 1.0)
