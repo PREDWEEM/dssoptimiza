@@ -193,7 +193,7 @@ with st.sidebar:
     LAIhc = st.number_input("LAIhc (escenario altamente competitivo)", 0.5, 10.0, 3.5, 0.1)
 
 if not (sow_min <= sow_date <= sow_max):
-    st.error("La fecha de siembra debe estar entre el 1 de mayo y el 1 de agosto."); st.stop()
+    st.error("La fecha de siembra debe estar entre el 1 de mayo y el 1 de julio."); st.stop()
 
 def compute_canopy(fechas: pd.Series, sow_date: dt.date, mode_canopy: str,
                    t_lag: int, t_close: int, cov_max: float, lai_max: float, k_beer: float):
@@ -287,7 +287,7 @@ scale = np.minimum(scale, 1.0)
 S1 *= scale; S2 *= scale; S3 *= scale; S4 *= scale
 
 # Coeficientes relativos de aporte por estado (efecto competitivo / sombreo)
-FC_S = {"S1": 0.0, "S2": 0.3, "S3": 0.6, "S4": 1.0}
+FC_S = {"S1": 0.1, "S2": 0.3, "S3": 0.6, "S4": 1.0}
 
 # Arrays finales (compatibles con el resto del flujo)
 S1_arr = S1; S2_arr = S2; S3_arr = S3; S4_arr = S4
