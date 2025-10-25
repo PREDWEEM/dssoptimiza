@@ -229,29 +229,50 @@ df_ciec = pd.DataFrame({"fecha": df_plot["fecha"], "Ciec": Ciec})
 one_minus_Ciec = np.clip((1.0 - Ciec).astype(float), 0.0, 1.0)
 
 # ===========================================================
-# 🌾 Sensibilidad temporal del cultivo (Periodo Crítico)
+# 🌾 Sensibilidad temporal del cultivo (Periodo Crítico de Competencia)
 # ===========================================================
-# Supuesto: el cultivo es 5× más sensible a la competencia
-# durante el PCC (por defecto: 8 de octubre – 4 de noviembre).
+# Este bloque permite ajustar desde la barra lateral:
+# - Fechas de inicio y fin del PCC
+# - Factor de sensibilidad relativa (ej. ×5)
+# La sensibilidad se aplica como multiplicador sobre (1−Ciec).
 
-PCC_INI = dt.date(df_plot["fecha"].dt.year.mode()[0], 10, 8)
-PCC_FIN = dt.date(df_plot["fecha"].dt.year.mode()[0], 11, 4)
-SENS_FACTOR = 5.0  # sensibilidad relativa durante el PCC
+with st.sidebar:
+    st.header("Sensibilidad del cultivo — PCC")
+    st.caption("Durante el Periodo Crítico de Competencia (PCC), el cultivo es más sensible a la interferencia de malezas.")
+    
+    # Fechas sugeridas por defecto (8 oct–4 nov)
+    year_ref_pcc = int(df_plot["fecha"].dt.year.mode()[0])
+    PCC_INI = st.date_input("Inicio PCC", dt.date(year_ref_pcc, 10, 8))
+    PCC_FIN = st.date_input("Fin PCC", dt.date(year_ref_pcc, 11, 4))
+    SENS_FACTOR = st.number_input("Sensibilidad relativa (×)", 1.0, 10.0, 5.0, 0.5)
+    st.markdown(f"🟡 **PCC:** {PCC_INI} → {PCC_FIN} · ×**{SENS_FACTOR:.1f}**")
 
 # Vector de sensibilidad diaria
 dates_dt = [pd.Timestamp(d).date() for d in df_plot["fecha"]]
-sens_factor = np.ones(len(dates_dt))
+sens_factor = np.ones(len(dates_dt), dtype=float)
 for i, d in enumerate(dates_dt):
     if PCC_INI <= d <= PCC_FIN:
-        sens_factor[i] = SENS_FACTOR
+        sens_factor[i] = float(SENS_FACTOR)
 
 # Multiplicador final (1−Ciec) × Sensibilidad
 one_minus_Ciec_sens = np.clip(one_minus_Ciec * sens_factor, 0.0, None)
 
-# (Opcional) Mostrar en el gráfico o en sidebar
-st.sidebar.subheader("Periodo Crítico de Competencia (PCC)")
-st.sidebar.write(f"**Inicio:** {PCC_INI} · **Fin:** {PCC_FIN}")
-st.sidebar.write(f"**Sensibilidad relativa:** ×{SENS_FACTOR:.1f}")
+# (Opcional) vista previa de la curva de sensibilidad
+with st.expander("Ver curva de sensibilidad temporal (PCC)"):
+    import plotly.graph_objects as go
+    fig_sens = go.Figure()
+    fig_sens.add_trace(go.Scatter(x=df_plot["fecha"], y=sens_factor,
+                                  mode="lines", name="Sensibilidad relativa"))
+    fig_sens.add_vrect(x0=PCC_INI, x1=PCC_FIN, fillcolor="gold", opacity=0.25,
+                       annotation_text="PCC", annotation_position="top left")
+    fig_sens.update_layout(title="Sensibilidad relativa del cultivo (PCC)",
+                           yaxis_title="Factor de sensibilidad (×)",
+                           xaxis_title="Fecha",
+                           yaxis=dict(range=[0, max(1.2, SENS_FACTOR+0.5)]))
+    st.plotly_chart(fig_sens, use_container_width=True)
+
+
+
 
 # ------------------ ESTADOS FENOLÓGICOS SECUENCIALES (S1→S4) ------------------
 # Representan fases fenológicas del mismo grupo de individuos (no cohortes).
