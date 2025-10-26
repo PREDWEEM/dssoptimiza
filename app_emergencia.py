@@ -1,101 +1,88 @@
 # -*- coding: utf-8 -*-
 # ===============================================================
-# 🌾 PREDWEEM v3.18 — (1−Ciec) + AUC + Cohortes SECUENCIALES · PCC configurable por fechas
+# 🌾 PREDWEEM v3.18.2 — (1−Ciec) + AUC + Cohortes SECUENCIALES
 # ===============================================================
-
-import io, re, math, datetime as dt
-import numpy as np
-import pandas as pd
-import streamlit as st
-import plotly.graph_objects as go
+import io, math, datetime as dt
+import numpy as np, pandas as pd, streamlit as st, plotly.graph_objects as go
 from datetime import timedelta
 
-# ------------------ FUNCIÓN DE PÉRDIDA ------------------
+# ---------- FUNCIÓN DE PÉRDIDA ----------
 def _loss(x):
     x = np.asarray(x, dtype=float)
     return 0.503 * x / (1.0 + (0.503 * x / 125.91))
 
-# ------------------ ESTADO UI ------------------
-if "opt_running" not in st.session_state: st.session_state.opt_running = False
-if "opt_stop" not in st.session_state:    st.session_state.opt_stop = False
+# ---------- UTILIDAD: AUC ROBUSTO ----------
+def auc_time(fecha, y, mask=None):
+    """Área bajo la curva (AUC) con fechas; robusto ante NaN o máscara vacía."""
+    if fecha is None or len(fecha) == 0:
+        return 0.0
+    f = pd.to_datetime(fecha)
+    y_arr = np.asarray(y, float)
 
-APP_TITLE = "PREDWEEM v3.18 · (1−Ciec) + AUC + Cohortes SECUENCIALES · PCC por fechas"
+    if mask is not None:
+        if len(mask) != len(f):
+            mask = np.resize(mask, len(f))
+        f = f[mask]; y_arr = y_arr[mask]
+
+    valid = ~np.isnan(y_arr)
+    if not np.any(valid) or len(f[valid]) < 2:
+        return 0.0
+
+    f_valid = f[valid]; y_valid = y_arr[valid]
+    tdays = (f_valid - f_valid.iloc[0]).dt.days.astype(float)
+    if len(tdays) < 2:
+        return 0.0
+    return float(np.trapz(y_valid, tdays))
+
+# ---------- INTERFAZ BÁSICA ----------
+APP_TITLE = "🌾 PREDWEEM v3.18.2 — Supresión + AUC + Cohortes · PCC por fechas"
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 st.title(APP_TITLE)
 
-# ------------------ LECTURA CSV ------------------
-def sniff_sep_dec(text):
-    sample = text[:8000]
-    counts = {sep: sample.count(sep) for sep in [",", ";", "\t"]}
-    sep_guess = max(counts, key=counts.get)
-    dec_guess = "." if sample.count(".") >= sample.count(",") else ","
-    return sep_guess, dec_guess
-
-@st.cache_data(show_spinner=False)
-def read_raw(up):
-    return up.read()
-
-def parse_csv(raw, sep_opt, dec_opt):
-    head = raw[:8000].decode("utf-8", errors="ignore")
-    sep_guess, dec_guess = sniff_sep_dec(head)
-    sep = sep_guess if sep_opt == "auto" else sep_opt
-    dec = dec_guess if dec_opt == "auto" else dec_opt
-    df = pd.read_csv(io.BytesIO(raw), sep=sep, decimal=dec)
-    return df, {"sep": sep, "dec": dec}
-
-def clean_numeric_series(s, decimal="."):
-    if s.dtype.kind in "if": return s
-    t = s.astype(str).str.replace("%", "", regex=False)
-    if decimal == ",": t = t.str.replace(".", "").str.replace(",", ".")
-    return pd.to_numeric(t, errors="coerce")
-
-def auc_time(fecha, y, mask=None):
-    f = pd.to_datetime(fecha); y_arr = np.asarray(y, float)
-    if mask is not None: f = f[mask]; y_arr = y_arr[mask]
-    if len(f) < 2: return 0.0
-    tdays = ((f - f[0]).dt.days).astype(float)
-    return float(np.trapz(y_arr, tdays))
-
-def cap_cumulative(series, cap, active_mask):
-    y = np.asarray(series, float)
-    out = np.zeros_like(y); cum = 0.0
-    for i in range(len(y)):
-        if active_mask[i]:
-            allowed = max(0.0, cap - cum)
-            val = min(max(0.0, y[i]), allowed)
-            out[i] = val; cum += val
-    return out
-
-# ------------------ CARGA DE DATOS ------------------
-with st.sidebar:
-    st.header("Datos de entrada")
-    up = st.file_uploader("CSV (fecha, EMERREL diaria/acumulada)", type=["csv"])
-    sep_opt = st.selectbox("Delimitador", ["auto", ",", ";", "\\t"], 0)
-    dec_opt = st.selectbox("Decimal", ["auto", ".", ","], 0)
-    dayfirst = st.checkbox("Fecha dd/mm/yyyy", True)
-    is_cumulative = st.checkbox("Mi CSV es acumulado", False)
-    as_percent = st.checkbox("Valores en %", True)
+# ---------- CARGA DE DATOS ----------
+st.sidebar.header("Datos de entrada")
+up = st.sidebar.file_uploader("CSV (fecha, EMERREL diaria/acumulada)", type=["csv"])
+sep_opt = st.sidebar.selectbox("Delimitador", ["auto", ",", ";", "\\t"], 0)
+dec_opt = st.sidebar.selectbox("Decimal", ["auto", ".", ","], 0)
+dayfirst = st.sidebar.checkbox("Fecha dd/mm/yyyy", True)
+is_cumulative = st.sidebar.checkbox("Mi CSV es acumulado", False)
+as_percent = st.sidebar.checkbox("Valores en %", True)
 
 if up is None:
-    st.info("Subí un CSV para continuar."); st.stop()
+    st.info("Subí un CSV para continuar.")
+    st.stop()
 
-raw = read_raw(up)
-df0, meta = parse_csv(raw, sep_opt, dec_opt)
+def sniff_sep_dec(text):
+    counts = {sep: text.count(sep) for sep in [",", ";", "\t"]}
+    sep_guess = max(counts, key=counts.get)
+    dec_guess = "." if text.count(".") >= text.count(",") else ","
+    return sep_guess, dec_guess
+
+raw = up.read()
+head = raw[:8000].decode("utf-8", errors="ignore")
+sep_guess, dec_guess = sniff_sep_dec(head)
+sep = sep_guess if sep_opt == "auto" else sep_opt
+dec = dec_guess if dec_opt == "auto" else dec_opt
+df0 = pd.read_csv(io.BytesIO(raw), sep=sep, decimal=dec)
+
 cols = list(df0.columns)
 c_fecha = st.selectbox("Columna de fecha", cols, 0)
 c_valor = st.selectbox("Columna de valor", cols, 1 if len(cols) > 1 else 0)
 
-fechas = pd.to_datetime(df0[c_fecha], dayfirst=dayfirst)
-vals = clean_numeric_series(df0[c_valor], decimal=meta["dec"])
+fechas = pd.to_datetime(df0[c_fecha], dayfirst=dayfirst, errors="coerce")
+vals = pd.to_numeric(df0[c_valor], errors="coerce")
 df = pd.DataFrame({"fecha": fechas, "valor": vals}).dropna().sort_values("fecha").reset_index(drop=True)
+
 emerrel = df["valor"].astype(float)
 if as_percent: emerrel /= 100.0
 if is_cumulative: emerrel = emerrel.diff().fillna(0.0).clip(lower=0)
-df_plot = pd.DataFrame({"fecha": df["fecha"], "EMERREL": emerrel})
 
-# ------------------ CANOPY ------------------
-year_ref = int(df_plot["fecha"].dt.year.mode().iloc[0])
-sow_min = dt.date(year_ref, 5, 1); sow_max = dt.date(year_ref, 8, 1)
+df_plot = pd.DataFrame({"fecha": df["fecha"], "EMERREL": emerrel})
+ts = pd.to_datetime(df_plot["fecha"])
+
+# ---------- CANOPY ----------
+year_ref = int(ts.dt.year.mode().iloc[0])
+sow_min, sow_max = dt.date(year_ref, 5, 1), dt.date(year_ref, 8, 1)
 with st.sidebar:
     st.header("Siembra y Canopia")
     sow_date = st.date_input("Fecha de siembra", value=sow_min, min_value=sow_min, max_value=sow_max)
@@ -119,70 +106,39 @@ def compute_canopy(fechas, sow_date, t_lag, t_close, cov_max, lai_max, k_beer):
 FC, LAI = compute_canopy(df_plot["fecha"], sow_date, t_lag, t_close, cov_max, lai_max, k_beer)
 Ciec = np.clip((LAI / 6.0), 0.0, 1.0)
 one_minus_Ciec = 1 - Ciec
-ts = pd.to_datetime(df_plot["fecha"])
-mask_since_sow = ts.dt.date >= sow_date
 
-# ------------------ PCC CONFIGURABLE POR FECHAS ------------------
-# ===============================================================
-# 🌾 PERIODO CRÍTICO DE COMPETENCIA (PCC) — fechas calendario robustas
-# ===============================================================
+# ---------- PCC CONFIGURABLE POR FECHAS ----------
 with st.sidebar:
     st.header("Periodo Crítico de Competencia (PCC)")
-
     usar_pcc = st.checkbox("Integrar densidad efectiva solo dentro del PCC", value=True)
 
-    # Calcular año y límites de las fechas en el CSV
     if len(ts) == 0:
-        st.warning("No hay datos de fechas para definir el PCC.")
-        st.stop()
+        st.warning("No hay datos para definir PCC."); st.stop()
 
     year_ref = int(ts.dt.year.mode().iloc[0])
-
-    # Limites absolutos (convertidos a date)
-    ts_min_date = pd.to_datetime(ts.min()).date()
-    ts_max_date = pd.to_datetime(ts.max()).date()
-
-    # Fechas por defecto (dentro del rango)
-    default_ini = dt.date(year_ref, 10, 10)
-    default_fin = dt.date(year_ref, 11, 4)
+    ts_min_date, ts_max_date = pd.to_datetime(ts.min()).date(), pd.to_datetime(ts.max()).date()
+    default_ini, default_fin = dt.date(year_ref, 10, 10), dt.date(year_ref, 11, 4)
     if default_ini < ts_min_date: default_ini = ts_min_date
     if default_fin > ts_max_date: default_fin = ts_max_date
 
-    # --- Entradas de usuario ---
-    pcc_ini_date = st.date_input(
-        "Inicio del PCC",
-        value=default_ini,
-        min_value=ts_min_date,
-        max_value=ts_max_date,
-        disabled=not usar_pcc,
-        key="pcc_ini"
-    )
+    pcc_ini_date = st.date_input("Inicio del PCC", value=default_ini,
+                                 min_value=ts_min_date, max_value=ts_max_date,
+                                 disabled=not usar_pcc)
+    pcc_fin_date = st.date_input("Fin del PCC", value=default_fin,
+                                 min_value=ts_min_date, max_value=ts_max_date,
+                                 disabled=not usar_pcc)
 
-    pcc_fin_date = st.date_input(
-        "Fin del PCC",
-        value=default_fin,
-        min_value=ts_min_date,
-        max_value=ts_max_date,
-        disabled=not usar_pcc,
-        key="pcc_fin"
-    )
-
-    # --- Validación y resumen ---
     if pcc_ini_date > pcc_fin_date:
-        st.error("⚠️ La fecha de inicio del PCC no puede ser posterior a la fecha de fin.")
-        st.stop()
+        st.error("⚠️ Fecha de inicio posterior al fin del PCC."); st.stop()
 
     if usar_pcc:
-        st.caption(
-            f"PCC activo: del **{pcc_ini_date}** al **{pcc_fin_date}** "
-            f"({(pcc_fin_date - pcc_ini_date).days} días)"
-        )
+        st.caption(f"PCC activo: del **{pcc_ini_date}** al **{pcc_fin_date}** "
+                   f"({(pcc_fin_date - pcc_ini_date).days} días)")
     else:
         st.caption("Integración sobre **todo el ciclo de cultivo**.")
 
-# Máscara temporal compatible
+mask_since_sow = ts.dt.date >= sow_date
 mask_pcc = (ts.dt.date >= pcc_ini_date) & (ts.dt.date <= pcc_fin_date)
-
 
 # ===============================================================
 # 🌾 MANEJO DE TRATAMIENTOS + CÁLCULOS DE X₂/X₃ + GRÁFICOS PRINCIPALES
