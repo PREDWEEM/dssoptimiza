@@ -6,6 +6,14 @@ import io, math, datetime as dt
 import numpy as np, pandas as pd, streamlit as st, plotly.graph_objects as go
 from datetime import timedelta
 
+# ===============================================================
+# 🔧 Inicialización segura del session_state
+# ===============================================================
+if "opt_running" not in st.session_state:
+    st.session_state.opt_running = False
+if "opt_stop" not in st.session_state:
+    st.session_state.opt_stop = False
+
 # ---------- FUNCIÓN DE PÉRDIDA ----------
 def _loss(x):
     x = np.asarray(x, dtype=float)
