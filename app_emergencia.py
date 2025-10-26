@@ -1186,13 +1186,13 @@ if results:
         st.plotly_chart(fig2_best, use_container_width=True)
 
         # ====================== Donut: Densidad efectiva al PCC ======================
-st.subheader("Distribución de densidad efectiva (A2) al PCC")
+        st.subheader("Distribución de densidad efectiva (A2) al PCC")
 
-if np.isfinite(A2_sup_final) and np.isfinite(A2_ctrl_final):
-    # Valores de densidad efectiva con y sin control
-    valores = [A2_ctrl_final, max(0.0, A2_sup_final - A2_ctrl_final)]
-    etiquetas = ["Con control", "Escapa sin control adicional"]
-    colores = ["#2ca02c", "#d62728"]
+        if np.isfinite(A2_sup_final) and np.isfinite(A2_ctrl_final):
+        # Valores de densidad efectiva con y sin control
+        valores = [A2_ctrl_final, max(0.0, A2_sup_final - A2_ctrl_final)]
+        etiquetas = ["Con control", "Escapa sin control adicional"]
+        colores = ["#2ca02c", "#d62728"]
 
     fig_donut = go.Figure(data=[go.Pie(
         labels=etiquetas,
