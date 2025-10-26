@@ -34,6 +34,23 @@ def auc_time(fecha, y, mask=None):
         return 0.0
     return float(np.trapz(y_valid, tdays))
 
+# ---------- FUNCIÓN AUXILIAR: CAP DE ACUMULADO ----------
+def cap_cumulative(series, cap, active_mask):
+    """
+    Limita la suma acumulada de una serie diaria a un máximo (cap),
+    considerando solo los valores con máscara activa True.
+    """
+    y = np.asarray(series, float)
+    out = np.zeros_like(y)
+    cum = 0.0
+    for i in range(len(y)):
+        if active_mask[i]:
+            allowed = max(0.0, cap - cum)
+            val = min(max(0.0, y[i]), allowed)
+            out[i] = val
+            cum += val
+    return out
+
 # ---------- INTERFAZ BÁSICA ----------
 APP_TITLE = "🌾 PREDWEEM v3.18.2 — Supresión + AUC + Cohortes · PCC por fechas"
 st.set_page_config(page_title=APP_TITLE, layout="wide")
