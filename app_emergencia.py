@@ -123,33 +123,66 @@ ts = pd.to_datetime(df_plot["fecha"])
 mask_since_sow = ts.dt.date >= sow_date
 
 # ------------------ PCC CONFIGURABLE POR FECHAS ------------------
+# ===============================================================
+# 🌾 PERIODO CRÍTICO DE COMPETENCIA (PCC) — fechas calendario robustas
+# ===============================================================
 with st.sidebar:
     st.header("Periodo Crítico de Competencia (PCC)")
+
     usar_pcc = st.checkbox("Integrar densidad efectiva solo dentro del PCC", value=True)
 
-    default_ini = pd.Timestamp(year=year_ref, month=10, day=10)
-    default_fin = pd.Timestamp(year=year_ref, month=11, day=4)
+    # Calcular año y límites de las fechas en el CSV
+    if len(ts) == 0:
+        st.warning("No hay datos de fechas para definir el PCC.")
+        st.stop()
 
-    pcc_ini_date = pd.to_datetime(
-        st.date_input("Inicio del PCC", value=default_ini.date(),
-                      min_value=ts.min().date(), max_value=ts.max().date(),
-                      disabled=not usar_pcc)
+    year_ref = int(ts.dt.year.mode().iloc[0])
+
+    # Limites absolutos (convertidos a date)
+    ts_min_date = pd.to_datetime(ts.min()).date()
+    ts_max_date = pd.to_datetime(ts.max()).date()
+
+    # Fechas por defecto (dentro del rango)
+    default_ini = dt.date(year_ref, 10, 10)
+    default_fin = dt.date(year_ref, 11, 4)
+    if default_ini < ts_min_date: default_ini = ts_min_date
+    if default_fin > ts_max_date: default_fin = ts_max_date
+
+    # --- Entradas de usuario ---
+    pcc_ini_date = st.date_input(
+        "Inicio del PCC",
+        value=default_ini,
+        min_value=ts_min_date,
+        max_value=ts_max_date,
+        disabled=not usar_pcc,
+        key="pcc_ini"
     )
-    pcc_fin_date = pd.to_datetime(
-        st.date_input("Fin del PCC", value=default_fin.date(),
-                      min_value=ts.min().date(), max_value=ts.max().date(),
-                      disabled=not usar_pcc)
+
+    pcc_fin_date = st.date_input(
+        "Fin del PCC",
+        value=default_fin,
+        min_value=ts_min_date,
+        max_value=ts_max_date,
+        disabled=not usar_pcc,
+        key="pcc_fin"
     )
+
+    # --- Validación y resumen ---
+    if pcc_ini_date > pcc_fin_date:
+        st.error("⚠️ La fecha de inicio del PCC no puede ser posterior a la fecha de fin.")
+        st.stop()
 
     if usar_pcc:
         st.caption(
-            f"PCC activo: del **{pcc_ini_date.date()}** al **{pcc_fin_date.date()}** "
+            f"PCC activo: del **{pcc_ini_date}** al **{pcc_fin_date}** "
             f"({(pcc_fin_date - pcc_ini_date).days} días)"
         )
     else:
         st.caption("Integración sobre **todo el ciclo de cultivo**.")
 
-mask_pcc = (ts >= pcc_ini_date) & (ts <= pcc_fin_date)
+# Máscara temporal compatible
+mask_pcc = (ts.dt.date >= pcc_ini_date) & (ts.dt.date <= pcc_fin_date)
+
 
 # ===============================================================
 # 🌾 MANEJO DE TRATAMIENTOS + CÁLCULOS DE X₂/X₃ + GRÁFICOS PRINCIPALES
