@@ -179,6 +179,88 @@ fig.update_layout(title="Emergencia y PCC",xaxis_title="Fecha",yaxis_title="EMER
 st.plotly_chart(fig,use_container_width=True)
 
 
+# ===============================================================
+# 🧠 OPTIMIZACIÓN SIMPLE + GRÁFICOS DE RESULTADOS
+# ===============================================================
+with st.sidebar:
+    st.header("Optimización")
+    optimizer = st.selectbox("Método", ["Grid","Aleatoria","Recocido"], index=1)
+    max_evals = st.number_input("Máx. evaluaciones",100,50000,2000,100)
+    if optimizer=="Recocido":
+        sa_iters=st.number_input("Iteraciones",100,10000,2000,100)
+        sa_T0=st.number_input("T inicial",0.01,50.0,5.0,0.1)
+        sa_cooling=st.number_input("γ enfriamiento",0.80,0.9999,0.995,0.0001)
+    c1,c2=st.columns(2)
+    with c1:
+        start_clicked=st.button("▶️ Iniciar",use_container_width=True,disabled=st.session_state.opt_running)
+    with c2:
+        stop_clicked=st.button("⏹️ Detener",use_container_width=True,disabled=not st.session_state.opt_running)
+    if start_clicked: st.session_state.opt_running=True; st.session_state.opt_stop=False
+    if stop_clicked: st.session_state.opt_stop=True
+
+def evaluate_X(X): return {"x2":X,"x3":X*0.7,"loss_pct":_loss(X*0.7)}
+results=[]; status_ph=st.empty(); prog_ph=st.empty()
+if factor_area_to_plants and st.session_state.opt_running:
+    status_ph.info("Optimizando…")
+    if optimizer=="Grid":
+        N=int(max_evals)
+        for i in range(1,N+1):
+            if st.session_state.opt_stop: break
+            X=np.random.uniform(0,MAX_PLANTS_CAP)
+            results.append(evaluate_X(X))
+            if i%max(1,N//100)==0: prog_ph.progress(i/N)
+    elif optimizer=="Aleatoria":
+        N=int(max_evals)
+        for i in range(1,N+1):
+            if st.session_state.opt_stop: break
+            X=np.random.uniform(0,MAX_PLANTS_CAP)
+            results.append(evaluate_X(X))
+            if i%max(1,N//100)==0: prog_ph.progress(i/N)
+    else:
+        curX=np.random.uniform(0,MAX_PLANTS_CAP)
+        cur_eval=evaluate_X(curX); best=cur_eval; T=float(sa_T0)
+        for it in range(1,int(sa_iters)+1):
+            if st.session_state.opt_stop: break
+            candX=np.clip(curX+np.random.normal(0,MAX_PLANTS_CAP*0.05),0,MAX_PLANTS_CAP)
+            cand_eval=evaluate_X(candX)
+            d=cand_eval["loss_pct"]-cur_eval["loss_pct"]
+            if d<=0 or np.random.random()<np.exp(-d/max(1e-9,T)):
+                curX,cur_eval=candX,cand_eval
+                if cur_eval["loss_pct"]<best["loss_pct"]: best=cur_eval
+            T*=sa_cooling
+            if it%max(1,int(sa_iters)//100)==0: prog_ph.progress(it/sa_iters)
+        results.append(best)
+    st.session_state.opt_running=False; status_ph.success("Optimización finalizada.")
+
+# ---------- Resultados ----------
+if results:
+    best=sorted(results,key=lambda r:r["loss_pct"])[0]
+    X2_b,X3_b=best["x2"],best["x3"]
+    x_curve=np.linspace(0,MAX_PLANTS_CAP,400); y_curve=_loss(x_curve)
+    fig=go.Figure()
+    fig.add_trace(go.Scatter(x=x_curve,y=y_curve,mode="lines",name="Pérdida (%) vs x"))
+    fig.add_trace(go.Scatter(x=[X2_b],y=[_loss(X2_b)],mode="markers+text",text=[f"x₂={X2_b:.1f}"],textposition="top center"))
+    fig.add_trace(go.Scatter(x=[X3_b],y=[_loss(X3_b)],mode="markers+text",text=[f"x₃={X3_b:.1f}"],textposition="top right"))
+    fig.update_layout(title="Pérdida de rendimiento vs densidad efectiva",
+                      xaxis_title="x (pl·m²)",yaxis_title="Pérdida (%)")
+    st.plotly_chart(fig,use_container_width=True)
+
+# ---------- Flujo acumulado hacia PCC ----------
+st.subheader("🌱 Flujo acumulado hacia el PCC")
+if factor_area_to_plants is not None:
+    acum=np.cumsum(np.where(mask_since_sow,base_pl_daily_cap,0.0))
+    idx_ini=np.argmax(ts.dt.date>=pcc_ini_date) if usar_pcc else 0
+    val_pcc=acum[idx_ini] if idx_ini<len(acum) else acum[-1]
+    figf=go.Figure()
+    figf.add_trace(go.Scatter(x=ts,y=acum,mode="lines",name="Acumulado sin control"))
+    if usar_pcc:
+        figf.add_vrect(x0=pcc_ini_date,x1=pcc_fin_date,fillcolor="rgba(255,215,0,0.25)",line_width=0,
+                       annotation_text="PCC",annotation_position="top left")
+        figf.add_trace(go.Scatter(x=[pcc_ini_date],y=[val_pcc],mode="markers+text",
+                                  text=["Llegan vivas"],textposition="top center"))
+    figf.update_layout(title="Flujo acumulado de individuos desde siembra hasta PCC",
+                       xaxis_title="Fecha",yaxis_title="Malezas acumuladas (pl·m²)")
+    st.plotly_chart(figf,use_container_width=True)
 
 
 
