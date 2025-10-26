@@ -949,7 +949,7 @@ if factor_area_to_plants is None or not np.isfinite(auc_cruda):
 else:
     if st.session_state.opt_running:
         status_ph.info("Optimizando…")
-        if optimizer == "Grid (combinatorio)":
+        if optimizer == "Grid (combinatorio)"):
             scenarios = build_all_scenarios()
             total = len(scenarios)
             st.caption(f"Se evaluarán {total:,} configuraciones")
@@ -1184,37 +1184,6 @@ if results:
         fig2_best.add_trace(go.Scatter(x=[X3_b], y=[_loss(X3_b)], mode="markers+text", name="x₃ (con ctrl)", text=[f"x₃={X3_b:.1f}"], textposition="top right"))
         fig2_best.update_layout(title="Figura 2 — Pérdida de rendimiento (%) vs x", xaxis_title="x (pl·m²)", yaxis_title="Pérdida (%)")
         st.plotly_chart(fig2_best, use_container_width=True)
-
-        # ====================== Donut: Densidad efectiva al PCC ======================
-        st.subheader("Distribución de densidad efectiva (A2) al PCC")
-
-        if np.isfinite(A2_sup_final) and np.isfinite(A2_ctrl_final):
-        # Valores de densidad efectiva con y sin control
-        valores = [A2_ctrl_final, max(0.0, A2_sup_final - A2_ctrl_final)]
-        etiquetas = ["Con control", "Escapa sin control adicional"]
-        colores = ["#2ca02c", "#d62728"]
-
-    fig_donut = go.Figure(data=[go.Pie(
-        labels=etiquetas,
-        values=valores,
-        hole=0.55,
-        textinfo="label+percent",
-        marker=dict(colors=colores, line=dict(color="white", width=2))
-    )])
-
-    fig_donut.update_layout(
-        title=f"Densidad efectiva A2 al PCC (tope {MAX_PLANTS_CAP:.0f} pl·m²)",
-        showlegend=False,
-        margin=dict(l=30, r=30, t=60, b=30),
-        annotations=[dict(text=f"A2ctrl={A2_ctrl_final:.0f}<br>A2sup={A2_sup_final:.0f}",
-                          x=0.5, y=0.5, font_size=14, showarrow=False)]
-    )
-
-    st.plotly_chart(fig_donut, use_container_width=False, width=350)
-    st.caption("El área verde representa la densidad controlada al PCC; el rojo, la fracción remanente.")
-else:
-    st.info("A2 no calculable — revise que haya datos válidos y que la fecha de siembra esté dentro del rango.")
-       
 
         # Dinámica S1–S4
         df_states_week_b = (
