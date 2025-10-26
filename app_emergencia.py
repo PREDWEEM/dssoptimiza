@@ -14,8 +14,17 @@ st.set_page_config(page_title="🌾 PREDWEEM — Cohortes + PCC + Optimización"
 st.title("🌾 PREDWEEM — Supresión (1−Ciec) + Control (AUC) + Cohortes secuenciales + Optimización")
 
 # ---------- CARGA DEL CSV ----------
-CSV_PATH = "meteo_history.csv"
-df = pd.read_csv(CSV_PATH)
+st.sidebar.header("Datos meteorológicos")
+
+uploaded_file = st.sidebar.file_uploader("📤 Cargar archivo meteo_history.csv", type=["csv"])
+
+if uploaded_file is not None:
+    df = pd.read_csv(uploaded_file)
+    st.sidebar.success("Archivo cargado correctamente.")
+else:
+    st.warning("Subí un archivo 'meteo_history.csv' para continuar.")
+    st.stop()
+
 df.columns = [c.strip().lower() for c in df.columns]
 if "date" in df.columns:
     df["date"] = pd.to_datetime(df["date"])
