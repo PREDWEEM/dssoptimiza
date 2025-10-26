@@ -14,28 +14,41 @@ st.set_page_config(page_title="🌾 PREDWEEM — Cohortes + PCC + Optimización"
 st.title("🌾 PREDWEEM — Supresión (1−Ciec) + Control (AUC) + Cohortes secuenciales + Optimización")
 
 # ---------- CARGA DEL CSV ----------
+# ===============================================================
+# 📤 CARGA FLEXIBLE DE ARCHIVO METEOROLÓGICO
+# ===============================================================
 st.sidebar.header("Datos meteorológicos")
 
-uploaded_file = st.sidebar.file_uploader("📤 Cargar archivo meteo_history.csv", type=["csv"])
+uploaded_file = st.sidebar.file_uploader("Cargar archivo meteorológico (CSV o XLSX)", type=["csv", "xlsx"])
 
-if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file)
-    st.sidebar.success("Archivo cargado correctamente.")
-else:
-    st.warning("Subí un archivo 'meteo_history.csv' para continuar.")
+if uploaded_file is None:
+    st.warning("Subí un archivo 'meteo_history.csv' o .xlsx para continuar.")
     st.stop()
 
+# --- Detección de tipo y lectura segura ---
+try:
+    if uploaded_file.name.lower().endswith(".xlsx"):
+        df = pd.read_excel(uploaded_file)
+    else:
+        # Detectar separador automáticamente
+        df = pd.read_csv(uploaded_file, sep=None, engine="python")
+except Exception as e:
+    st.error(f"Error al leer el archivo: {e}")
+    st.stop()
+
+# --- Normalizar columnas ---
 df.columns = [c.strip().lower() for c in df.columns]
 if "date" in df.columns:
-    df["date"] = pd.to_datetime(df["date"])
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
 elif "fecha" in df.columns:
-    df["date"] = pd.to_datetime(df["fecha"])
+    df["date"] = pd.to_datetime(df["fecha"], errors="coerce")
 else:
-    st.error("No se encuentra columna de fecha válida (date o Fecha).")
+    st.error("No se encuentra columna de fecha ('date' o 'Fecha').")
     st.stop()
 
-df = df.sort_values("date").reset_index(drop=True)
+df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
 ts = pd.to_datetime(df["date"])
+
 
 # ---------- PARÁMETROS CALIBRADOS ----------
 ALPHA = 0.503
