@@ -949,7 +949,7 @@ if factor_area_to_plants is None or not np.isfinite(auc_cruda):
 else:
     if st.session_state.opt_running:
         status_ph.info("Optimizando…")
-        if optimizer == "Grid (combinatorio)"):
+        if optimizer == "Grid (combinatorio)":
             scenarios = build_all_scenarios()
             total = len(scenarios)
             st.caption(f"Se evaluarán {total:,} configuraciones")
