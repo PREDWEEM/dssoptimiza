@@ -949,6 +949,179 @@ def evaluate(sd: dt.date, schedule: list):
                    _remaining_in_window_eval(w, ["S1","S2","S3"]) > EPS_REMAIN:
                     _apply_eval(w, a["eff"], ["S1","S2","S3"])
 
+# =====================================================
+# BLOQUE FINAL — Optimización (residualidades separadas) + Mejor escenario (gráficos)
+# =====================================================
+
+st.markdown("---")
+st.header("🧠 Optimización")
+
+# ===================== CONFIGURACIÓN DE PARÁMETROS =====================
+with st.sidebar:
+    st.header("Optimización (variables habilitadas)")
+    sow_search_from = st.date_input("Buscar siembra desde", value=sow_min, min_value=sow_min, max_value=sow_max)
+    sow_search_to   = st.date_input("Buscar siembra hasta",  value=sow_max, min_value=sow_min, max_value=sow_max)
+    sow_step_days   = st.number_input("Paso de siembra (días)", 1, 30, 2, 1)
+
+    use_preR_opt      = st.checkbox("Incluir presiembra + residual (≤ siembra−14; S1–S2)", True)
+    use_preemR_opt    = st.checkbox("Incluir preemergente + residual (siembra..siembra+10; S1–S2)", True)
+    use_post_selR_opt = st.checkbox("Incluir post + residual (≥ siembra + 20; S1–S2)", True)
+    use_post_gram_opt = st.checkbox(f"Incluir graminicida post (+{POST_GRAM_FORWARD_DAYS-1} d; S1–S3)", True)
+
+    ef_preR_opt      = st.slider("Eficiencia presiembraR (%)", 0, 100, 90, 1)   if use_preR_opt else 0
+    ef_preemR_opt    = st.slider("Eficiencia preemergenteR (%)", 0, 100, 90, 1) if use_preemR_opt else 0
+    ef_post_selR_opt = st.slider("Eficiencia post residual (%)", 0, 100, 90, 1) if use_post_selR_opt else 0
+    ef_post_gram_opt = st.slider("Eficiencia graminicida post (%)", 0, 100, 90, 1) if use_post_gram_opt else 0
+
+    st.markdown("### ⏱️ Residualidades por tipo")
+    res_min_preR,   res_max_preR   = st.slider("Presiembra residual (min–max)",   15, 120, (30, 45), 5)
+    res_step_preR                   = st.number_input("Paso presiembra (días)",     1, 30, 5, 1)
+    res_min_preemR, res_max_preemR = st.slider("Preemergente residual (min–max)", 15, 120, (40, 50), 5)
+    res_step_preemR                 = st.number_input("Paso preemergente (días)",   1, 30, 5, 1)
+    res_min_postR,  res_max_postR  = st.slider("Post residual (min–max)",         15, 120, (45, 60), 5)
+    res_step_postR                  = st.number_input("Paso post (días)",           1, 30, 5, 1)
+
+    preR_min_back  = st.number_input("PresiembraR: buscar hasta X d antes siembra", 14, 120, 14, 1)
+    preR_step_days = st.number_input("Paso fechas PRESIEMBRA (días)", 1, 30, 2, 1)
+    preem_step_days = st.number_input("Paso fechas PREEMERGENTE (días)", 1, 10, 2, 1)
+    post_days_fw   = st.number_input("Post: días después de siembra (máximo)", 20, 180, 60, 1)
+    post_step_days = st.number_input("Paso fechas POST (días)", 1, 30, 2, 1)
+
+    optimizer  = st.selectbox("Optimizador", ["Grid (combinatorio)", "Búsqueda aleatoria", "Recocido simulado"], 0)
+    max_evals  = st.number_input("Máx. evaluaciones", 100, 100000, 4000, 100)
+    top_k_show = st.number_input("Top-k a mostrar", 1, 20, 5, 1)
+
+    if optimizer == "Recocido simulado":
+        sa_iters   = st.number_input("Iteraciones (SA)", 100, 50000, 5000, 100)
+        sa_T0      = st.number_input("Temperatura inicial", 0.01, 50.0, 5.0, 0.1)
+        sa_cooling = st.number_input("Factor de enfriamiento (γ)", 0.80, 0.9999, 0.995, 0.0001)
+
+    st.subheader("Ejecución")
+    c1, c2 = st.columns(2)
+    with c1: start_clicked = st.button("▶️ Iniciar", use_container_width=True, disabled=st.session_state.opt_running)
+    with c2: stop_clicked  = st.button("⏹️ Detener", use_container_width=True, disabled=not st.session_state.opt_running)
+    if start_clicked:
+        st.session_state.opt_stop = False
+        st.session_state.opt_running = True
+    if stop_clicked:
+        st.session_state.opt_stop = True
+
+# ===================== VALIDACIONES =====================
+if sow_search_from > sow_search_to:
+    st.error("Rango de siembra inválido (desde > hasta).")
+    st.stop()
+
+# ===================== REPORTE Y GRÁFICOS DEL MEJOR ESCENARIO =====================
+if results:
+    results_sorted = sorted(results, key=lambda r: (r["loss_pct"], r["x3"]))
+    best = results_sorted[0]
+
+    st.subheader("🏆 Mejor escenario")
+    st.markdown(
+        f"**Siembra:** **{best['sow']}**  \n"
+        f"**Pérdida estimada:** **{best['loss_pct']:.2f}%**  \n"
+        f"**x₂:** {best['x2']:.1f} · **x₃:** {best['x3']:.1f} pl·m²  \n"
+        f"**A2_sup:** {best['A2_sup']:.1f} · **A2_ctrl:** {best['A2_ctrl']:.1f} pl·m²"
+    )
+
+    # Cronograma en tabla
+    df_best = pd.DataFrame([
+        {"Intervención": a["kind"], "Inicio": a["date"],
+         "Duración (d)": a["days"], "Eficiencia (%)": a["eff"],
+         "Estados": ",".join(a["states"])}
+        for a in best["schedule"]
+    ])
+    if len(df_best):
+        st.dataframe(df_best, use_container_width=True)
+        st.download_button("💾 Descargar cronograma (CSV)",
+                           df_best.to_csv(index=False).encode("utf-8"),
+                           "mejor_cronograma.csv", "text/csv")
+
+    # ======== Recalcular y graficar ========
+    envb = recompute_for_sow(pd.to_datetime(best["sow"]).date(), int(T12), int(T23), int(T34))
+    if envb:
+        ts_b = envb["ts"]; mask_b = envb["mask_since"]
+        S1p,S2p,S3p,S4p = envb["S_pl"]; sup_cap_b = envb["sup_cap"]
+
+        # --- Aplicar controles (usa versión modificada con postR→S1-S2 y gram≥fin_postR)
+        c1=c2=c3=c4=np.ones_like(ts_b, float)
+        fin_postR = None
+        for a in best["schedule"]:
+            if a["kind"] == "postR":
+                fin_postR = pd.to_datetime(a["date"]) + pd.Timedelta(days=int(a["days"]))
+        def _apply(w, eff, stts):
+            red=np.clip(1-(eff/100)*np.clip(w,0,1),0,1)
+            if "S1" in stts: np.multiply(c1,red,out=c1)
+            if "S2" in stts: np.multiply(c2,red,out=c2)
+            if "S3" in stts: np.multiply(c3,red,out=c3)
+            if "S4" in stts: np.multiply(c4,red,out=c4)
+        for a in best["schedule"]:
+            d0=pd.to_datetime(a["date"]).date()
+            d1=d0+pd.Timedelta(days=int(a["days"]))
+            w=((ts_b.dt.date>=d0)&(ts_b.dt.date<d1)).astype(float)
+            if a["kind"]=="preR" or a["kind"]=="preemR": _apply(w,a["eff"],["S1","S2"])
+            elif a["kind"]=="postR": _apply(w,a["eff"],["S1","S2"])
+            elif a["kind"]=="post_gram":
+                if fin_postR is None or pd.to_datetime(a["date"])>=fin_postR:
+                    _apply(w,a["eff"],["S1","S2","S3"])
+
+        total_ctrl = S1p*c1 + S2p*c2 + S3p*c3 + S4p*c4
+        scale = np.where(total_ctrl>1e-9, np.minimum(1,sup_cap_b/total_ctrl),0)
+        S1c,S2c,S3c,S4c = S1p*c1*scale, S2p*c2*scale, S3p*c3*scale, S4p*c4*scale
+
+        # --- GRÁFICO A: EMERREL + Aportes semanales + Ciec
+        df_week = (
+            pd.DataFrame({"fecha": ts_b, "sin_ctrl": sup_cap_b,
+                          "con_ctrl": S1c+S2c+S3c+S4c})
+            .set_index("fecha").resample("W-MON").sum().reset_index()
+        )
+        figA = go.Figure()
+        figA.add_trace(go.Scatter(x=ts, y=df_plot["EMERREL"], mode="lines", name="EMERREL"))
+        figA.add_trace(go.Scatter(x=df_week["fecha"], y=df_week["sin_ctrl"], mode="lines+markers",
+                                  yaxis="y2", name="Aporte semanal (sin ctrl)"))
+        figA.add_trace(go.Scatter(x=df_week["fecha"], y=df_week["con_ctrl"], mode="lines+markers",
+                                  yaxis="y2", name="Aporte semanal (con ctrl)", line=dict(dash="dot")))
+        Ciec_best = 1 - compute_ciec_for(pd.to_datetime(best["sow"]).date())
+        figA.add_trace(go.Scatter(x=ts_b, y=1-Ciec_best, mode="lines", yaxis="y3", name="Ciec"))
+        figA.update_layout(
+            title="📈 EMERREL y plantas·m²·semana — Mejor escenario",
+            yaxis_title="EMERREL", yaxis2=dict(overlaying="y", side="right",
+            title="pl·m²·sem⁻¹", range=[0,100]), yaxis3=dict(overlaying="y",
+            side="right", title="Ciec", position=0.97, range=[0,1])
+        )
+        for a in best["schedule"]:
+            x0=pd.to_datetime(a["date"]); x1=x0+pd.Timedelta(days=a["days"])
+            figA.add_vrect(x0=x0,x1=x1,fillcolor="rgba(30,144,255,0.15)",line_width=0)
+        st.plotly_chart(figA, use_container_width=True)
+
+        # --- GRÁFICO B: Curva de pérdida (%)
+        x=np.linspace(0,MAX_PLANTS_CAP,400); y=_loss(x)
+        X2b=float(np.nansum(sup_cap_b[mask_b]))
+        X3b=float(np.nansum((S1c+S2c+S3c+S4c)[mask_b]))
+        figB=go.Figure()
+        figB.add_trace(go.Scatter(x=x,y=y,mode="lines",name="Modelo pérdida"))
+        figB.add_trace(go.Scatter(x=[X2b],y=[_loss(X2b)],mode="markers+text",
+                                  text=[f"x₂={X2b:.1f}"],textposition="top center"))
+        figB.add_trace(go.Scatter(x=[X3b],y=[_loss(X3b)],mode="markers+text",
+                                  text=[f"x₃={X3b:.1f}"],textposition="top right"))
+        figB.update_layout(title="📉 Pérdida de rendimiento vs densidad efectiva",
+                           xaxis_title="x (pl·m²)", yaxis_title="Pérdida (%)")
+        st.plotly_chart(figB, use_container_width=True)
+
+        # --- GRÁFICO C: Estados S1–S4 (stacked semanal)
+        df_states=(pd.DataFrame({"fecha":ts_b,"S1":S1c,"S2":S2c,"S3":S3c,"S4":S4c})
+                   .set_index("fecha").resample("W-MON").sum().reset_index())
+        figC=go.Figure()
+        for s in ["S1","S2","S3","S4"]:
+            figC.add_trace(go.Scatter(x=df_states["fecha"],y=df_states[s],
+                                      mode="lines",stackgroup="one",name=s))
+        figC.update_layout(title="🌿 Aportes semanales por estado (con control + cap)",
+                           xaxis_title="Tiempo", yaxis_title="pl·m²·sem⁻¹")
+        st.plotly_chart(figC, use_container_width=True)
+else:
+    st.info("Aún no hay resultados de optimización.")
+
+
 
 
 
