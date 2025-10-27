@@ -572,6 +572,8 @@ else:
         # ---------------------------------------------
         # 🧩 MODO GRID COMBINATORIO
         # ---------------------------------------------
+        optimizer = st.session_state.get("optimizer", "Grid (combinatorio)")
+
         if optimizer == "Grid (combinatorio)":
             scenarios = build_all_scenarios()
             total = len(scenarios)
