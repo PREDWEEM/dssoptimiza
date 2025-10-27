@@ -613,6 +613,76 @@ st.markdown(
 )
 
 # =====================================================
+# FUNCION RECOMPUTE_FOR_SOW — recalcula todo para una fecha de siembra
+# =====================================================
+
+def recompute_for_sow(sow_d: dt.date, T12: int, T23: int, T34: int):
+    mask_since = (ts.dt.date >= sow_d)
+    one_minus = compute_ciec_for(sow_d)
+    births = np.where(mask_since.to_numpy(), df_plot["EMERREL"].to_numpy(float), 0.0)
+
+    # ------------------ ESTADOS FENOLÓGICOS SECUENCIALES (S1→S4) ------------------
+    S1 = births.copy()
+    S2 = np.zeros_like(births)
+    S3 = np.zeros_like(births)
+    S4 = np.zeros_like(births)
+
+    for i in range(len(births)):
+        if i - int(T12) >= 0:
+            moved = births[i - int(T12)]
+            S1[i - int(T12)] -= moved
+            S2[i] += moved
+        if i - (int(T12) + int(T23)) >= 0:
+            moved = births[i - (int(T12) + int(T23))]
+            S2[i - (int(T12) + int(T23))] -= moved
+            S3[i] += moved
+        if i - (int(T12) + int(T23) + int(T34)) >= 0:
+            moved = births[i - (int(T12) + int(T23) + int(T34))]
+            S3[i - (int(T12) + int(T23) + int(T34))] -= moved
+            S4[i] += moved
+
+    # Correcciones numéricas
+    S1 = np.clip(S1, 0.0, None)
+    S2 = np.clip(S2, 0.0, None)
+    S3 = np.clip(S3, 0.0, None)
+    S4 = np.clip(S4, 0.0, None)
+
+    total_states = S1 + S2 + S3 + S4
+    emeac = np.cumsum(births)
+    scale = np.divide(np.clip(emeac, 1e-9, None), np.clip(total_states, 1e-9, None))
+    scale = np.minimum(scale, 1.0)
+    S1 *= scale; S2 *= scale; S3 *= scale; S4 *= scale
+
+    # Escalado por AUC
+    auc_cruda_loc = auc_time(ts, df_plot["EMERREL"].to_numpy(float), mask=mask_since)
+    if auc_cruda_loc <= 0:
+        return None
+
+    factor_area = MAX_PLANTS_CAP / auc_cruda_loc
+    S1_pl = np.where(mask_since, S1 * one_minus * 0.1 * factor_area, 0.0)
+    S2_pl = np.where(mask_since, S2 * one_minus * 0.3 * factor_area, 0.0)
+    S3_pl = np.where(mask_since, S3 * one_minus * 0.6 * factor_area, 0.0)
+    S4_pl = np.where(mask_since, S4 * one_minus * 1.0 * factor_area, 0.0)
+
+    base_pl_daily = np.where(mask_since, df_plot["EMERREL"].to_numpy(float) * factor_area, 0.0)
+    base_pl_daily_cap = cap_cumulative(base_pl_daily, MAX_PLANTS_CAP, mask_since.to_numpy())
+    sup_cap = np.minimum(S1_pl + S2_pl + S3_pl + S4_pl, base_pl_daily_cap)
+
+    return {
+        "mask_since": mask_since.to_numpy(),
+        "factor_area": factor_area,
+        "auc_cruda": auc_cruda_loc,
+        "S_pl": (S1_pl, S2_pl, S3_pl, S4_pl),
+        "sup_cap": sup_cap,
+        "ts": ts,
+        "fechas_d": ts.dt.date.values
+    }
+
+
+
+
+
+# =====================================================
 # FUNCIONES DE ACCIONES Y EVALUACIÓN (deben estar antes del optimizador)
 # =====================================================
 
