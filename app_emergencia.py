@@ -554,6 +554,77 @@ st.markdown(
 **A2 (ctrl, cap):** **{A2_ctrl_final if np.isfinite(A2_ctrl_final) else float('nan'):.1f}** pl·m²
 """
 )
+# ===============================================================
+# 🌿 DEFINICIÓN DE ACCIONES DE CONTROL (HERBICIDAS)
+# ===============================================================
+
+def act_presiembraR(date, days, eff):
+    """Acción: Presiembra selectivo residual (controla S1–S2)."""
+    return {
+        "kind": "preR",
+        "date": pd.to_datetime(date).date(),
+        "days": int(days),
+        "eff": float(eff),
+        "states": ["S1", "S2"],
+        "desc": f"Presiembra residual {eff:.0f}% ({days}d)"
+    }
+
+
+def act_preemR(date, days, eff):
+    """Acción: Preemergente selectivo residual (controla S1–S2)."""
+    return {
+        "kind": "preemR",
+        "date": pd.to_datetime(date).date(),
+        "days": int(days),
+        "eff": float(eff),
+        "states": ["S1", "S2"],
+        "desc": f"Preemergente residual {eff:.0f}% ({days}d)"
+    }
+
+
+def act_post_selR(date, days, eff):
+    """Acción: Postemergente residual (controla S1–S2)."""
+    return {
+        "kind": "postR",
+        "date": pd.to_datetime(date).date(),
+        "days": int(days),
+        "eff": float(eff),
+        "states": ["S1", "S2"],
+        "desc": f"Postemergente residual {eff:.0f}% ({days}d)"
+    }
+
+
+def act_post_gram(date, eff):
+    """Acción: Graminicida postemergente (controla S1–S4)."""
+    return {
+        "kind": "post_gram",
+        "date": pd.to_datetime(date).date(),
+        "days": 10,  # ventana típica corta
+        "eff": float(eff),
+        "states": ["S1", "S2", "S3", "S4"],
+        "desc": f"Graminicida post {eff:.0f}%"
+    }
+
+# ===============================================================
+# 🌾 VENTANAS DE FECHAS (FUNCIONES AUXILIARES)
+# ===============================================================
+
+def pre_sow_dates(sow_date):
+    """Fechas posibles de presiembra (ej. desde siembra−25 hasta siembra−14)."""
+    sow = pd.to_datetime(sow_date)
+    return [sow - pd.Timedelta(days=d) for d in range(25, 13, -1)]
+
+
+def preem_dates(sow_date):
+    """Fechas posibles de preemergente (siembra a siembra+10)."""
+    sow = pd.to_datetime(sow_date)
+    return [sow + pd.Timedelta(days=d) for d in range(0, 11)]
+
+
+def post_dates(sow_date):
+    """Fechas posibles de postemergente (siembra+20 hasta siembra+40)."""
+    sow = pd.to_datetime(sow_date)
+    return [sow + pd.Timedelta(days=d) for d in range(20, 41)]
 
 # ===============================================================
 # 🌾 CONTROLES DE OPTIMIZACIÓN — SIDEBAR STREAMLIT
