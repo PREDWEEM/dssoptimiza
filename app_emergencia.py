@@ -554,17 +554,16 @@ st.markdown(
 **A2 (ctrl, cap):** **{A2_ctrl_final if np.isfinite(A2_ctrl_final) else float('nan'):.1f}** pl·m²
 """
 )
+
 # ===============================================================
 # 🌾 OPTIMIZADOR COMPLETO — SIN RESTRICCIÓN DE SOLAPAMIENTO
 # ===============================================================
 
-# ---------------- EVALUACIÓN DE ESCENARIOS ----------------
 def evaluate(sd: dt.date, schedule: list):
-    """Evalúa un cronograma de controles (permite solapamientos)."""
+    """Evalúa un cronograma de controles, permitiendo solapamientos."""
     sow = pd.to_datetime(sd)
     sow_plus_20 = sow + pd.Timedelta(days=20)
 
-    # Filtrar acciones fuera de rango
     valid_actions = []
     for a in schedule:
         d = pd.to_datetime(a["date"])
@@ -589,7 +588,7 @@ def evaluate(sd: dt.date, schedule: list):
     ts_local = env["ts"]
     fechas_d_local = env["fechas_d"]
 
-    # Factores multiplicativos por estado
+    # Factores de control por estado
     c1 = np.ones_like(fechas_d_local, float)
     c2 = np.ones_like(fechas_d_local, float)
     c3 = np.ones_like(fechas_d_local, float)
@@ -602,7 +601,6 @@ def evaluate(sd: dt.date, schedule: list):
         if "S3" in states: np.multiply(c3, reduc, out=c3)
         if "S4" in states: np.multiply(c4, reduc, out=c4)
 
-    # Jerarquía: preR → preemR → postR → post_gram
     order = {"preR": 0, "preemR": 1, "postR": 2, "post_gram": 3}
     valid_actions.sort(key=lambda x: (order.get(x["kind"], 9), x["date"]))
 
@@ -613,31 +611,24 @@ def evaluate(sd: dt.date, schedule: list):
         if np.any(w):
             _apply_ctrl(w, a["eff"], a["states"])
 
-    tot_ctrl = S1_pl * c1 + S2_pl * c2 + S3_pl * c3 + S4_pl * c4
+    tot_ctrl = S1_pl*c1 + S2_pl*c2 + S3_pl*c3 + S4_pl*c4
     plantas_ctrl_cap = np.minimum(tot_ctrl, sup_cap)
 
     X2loc = float(np.nansum(sup_cap[mask_since]))
     X3loc = float(np.nansum(plantas_ctrl_cap[mask_since]))
     loss3 = _loss(X3loc)
 
-    auc_sup  = auc_time(ts_local, sup_cap, mask=mask_since)
+    auc_sup  = auc_time(ts_local, sup_cap,          mask=mask_since)
     auc_ctrl = auc_time(ts_local, plantas_ctrl_cap, mask=mask_since)
     A2_sup  = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP * (auc_sup  / env["auc_cruda"]))
     A2_ctrl = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP * (auc_ctrl / env["auc_cruda"]))
 
-    return {
-        "sow": sd,
-        "loss_pct": loss3,
-        "x2": X2loc,
-        "x3": X3loc,
-        "A2_sup": A2_sup,
-        "A2_ctrl": A2_ctrl,
-        "schedule": valid_actions,
-    }
+    return {"sow": sd, "loss_pct": loss3, "x2": X2loc, "x3": X3loc,
+            "A2_sup": A2_sup, "A2_ctrl": A2_ctrl, "schedule": valid_actions}
 
-# ---------------- CONSTRUCCIÓN DE ESCENARIOS ----------------
+
 def build_all_scenarios():
-    """Genera todas las combinaciones de escenarios."""
+    """Genera todas las combinaciones de escenarios posibles."""
     scenarios = []
     for sd in sow_candidates:
         grp = []
@@ -656,62 +647,57 @@ def build_all_scenarios():
         if use_post_gram_opt:
             grp.append([act_post_gram(d, ef_post_gram_opt)
                         for d in post_dates(sd)])
-
         combos = [[]]
-        for r in range(1, len(grp) + 1):
+        for r in range(1, len(grp)+1):
             for subset in itertools.combinations(range(len(grp)), r):
                 for p in itertools.product(*[grp[i] for i in subset]):
                     combos.append(list(p))
         scenarios.extend([(pd.to_datetime(sd).date(), sch) for sch in combos])
-
     st.caption(f"Escenarios generados: {len(scenarios):,}")
     return scenarios
 
 
 def sample_random_scenario():
-    """Genera un escenario aleatorio (válido o vacío si no hay)."""
+    """Genera un escenario aleatorio (válido o vacío)."""
     for _ in range(200):
         sd = random.choice(sow_candidates)
         schedule = []
         if use_preR_opt and random.random() < 0.7:
             cand = pre_sow_dates(sd)
             if cand:
-                schedule.append(
-                    act_presiembraR(random.choice(cand),
-                                    random.choice(res_days_preR),
-                                    ef_preR_opt)
-                )
+                schedule.append(act_presiembraR(random.choice(cand),
+                                                random.choice(res_days_preR),
+                                                ef_preR_opt))
         if use_preemR_opt and random.random() < 0.7:
             cand = preem_dates(sd)
             if cand:
-                schedule.append(
-                    act_preemR(random.choice(cand),
-                               random.choice(res_days_preemR),
-                               ef_preemR_opt)
-                )
+                schedule.append(act_preemR(random.choice(cand),
+                                           random.choice(res_days_preemR),
+                                           ef_preemR_opt))
         if use_post_selR_opt and random.random() < 0.7:
             cand = post_dates(sd)
             if cand:
-                schedule.append(
-                    act_post_selR(random.choice(cand),
-                                  random.choice(res_days_postR),
-                                  ef_post_selR_opt)
-                )
+                schedule.append(act_post_selR(random.choice(cand),
+                                              random.choice(res_days_postR),
+                                              ef_post_selR_opt))
         if use_post_gram_opt and random.random() < 0.7:
             cand = post_dates(sd)
             if cand:
-                schedule.append(
-                    act_post_gram(random.choice(cand),
-                                  ef_post_gram_opt)
-                )
+                schedule.append(act_post_gram(random.choice(cand),
+                                              ef_post_gram_opt))
         if schedule:
             return (pd.to_datetime(sd).date(), schedule)
     return (pd.to_datetime(sd).date(), [])
 
-# ---------------- EJECUCIÓN DEL OPTIMIZADOR ----------------
+
+# ===============================================================
+# EJECUCIÓN DEL OPTIMIZADOR
+# ===============================================================
 status_ph = st.empty()
 prog_ph = st.empty()
 results = []
+
+optimizer = st.session_state.get("optimizer", "Grid (combinatorio)")
 
 if factor_area_to_plants is None or not np.isfinite(auc_cruda):
     st.info("Necesitás AUC(EMERREL cruda) > 0 para optimizar.")
@@ -728,72 +714,62 @@ else:
                 scenarios = random.sample(scenarios, k=int(max_evals))
                 st.caption(f"Se muestrean {len(scenarios):,} configs (límite)")
             prog = prog_ph.progress(0.0)
-            n = len(scenarios)
-            step = max(1, n // 100)
             for i, (sd, sch) in enumerate(scenarios, 1):
-                if st.session_state.opt_stop:
-                    break
+                if st.session_state.opt_stop: break
                 r = evaluate(sd, sch)
-                if r is not None:
-                    results.append(r)
-                if i % step == 0 or i == n:
-                    prog.progress(min(1.0, i / n))
+                if r: results.append(r)
+                if i % max(1, len(scenarios)//100) == 0:
+                    prog.progress(i/len(scenarios))
             prog_ph.empty()
 
         elif optimizer == "Búsqueda aleatoria":
             N = int(max_evals)
             prog = prog_ph.progress(0.0)
-            for i in range(1, N + 1):
-                if st.session_state.opt_stop:
-                    break
+            for i in range(1, N+1):
+                if st.session_state.opt_stop: break
                 sd, sch = sample_random_scenario()
                 r = evaluate(sd, sch)
-                if r is not None:
-                    results.append(r)
-                if i % max(1, N // 100) == 0 or i == N:
-                    prog.progress(min(1.0, i / N))
+                if r: results.append(r)
+                if i % max(1, N//100) == 0:
+                    prog.progress(i/N)
             prog_ph.empty()
 
         else:  # Recocido simulado
             cur = sample_random_scenario()
             cur_eval = evaluate(*cur)
-            tries = 0
-            while cur_eval is None and tries < 200:
+            while cur_eval is None:
                 cur = sample_random_scenario()
                 cur_eval = evaluate(*cur)
-                tries += 1
-            if cur_eval is None:
-                status_ph.error("No fue posible encontrar un estado inicial válido.")
-            else:
-                best_eval = cur_eval
-                cur_loss = cur_eval["loss_pct"]
-                T = float(sa_T0)
-                prog = prog_ph.progress(0.0)
-                for it in range(1, int(sa_iters) + 1):
-                    if st.session_state.opt_stop:
-                        break
-                    cand = sample_random_scenario()
-                    cand_eval = evaluate(*cand)
-                    if cand_eval is not None:
-                        d = cand_eval["loss_pct"] - cur_loss
-                        if d <= 0 or random.random() < math.exp(-d / max(1e-9, T)):
-                            cur, cur_eval, cur_loss = cand, cand_eval, cand_eval["loss_pct"]
-                            results.append(cur_eval)
-                            if cur_loss < best_eval["loss_pct"]:
-                                best_eval = cur_eval
-                    T *= float(sa_cooling)
-                    if it % max(1, int(sa_iters) // 100) == 0 or it == int(sa_iters):
-                        prog.progress(min(1.0, it / float(sa_iters)))
-                results.append(best_eval)
-                prog_ph.empty()
+            best_eval = cur_eval
+            cur_loss = cur_eval["loss_pct"]
+            T = float(sa_T0)
+            prog = prog_ph.progress(0.0)
+            for it in range(1, int(sa_iters)+1):
+                if st.session_state.opt_stop: break
+                cand = sample_random_scenario()
+                cand_eval = evaluate(*cand)
+                if cand_eval:
+                    d = cand_eval["loss_pct"] - cur_loss
+                    if d <= 0 or random.random() < math.exp(-d / max(1e-9, T)):
+                        cur, cur_eval, cur_loss = cand, cand_eval, cand_eval["loss_pct"]
+                        results.append(cur_eval)
+                        if cur_loss < best_eval["loss_pct"]:
+                            best_eval = cur_eval
+                T *= float(sa_cooling)
+                if it % max(1, int(sa_iters)//100) == 0:
+                    prog.progress(it/int(sa_iters))
+            results.append(best_eval)
+            prog_ph.empty()
 
         st.session_state.opt_running = False
         st.session_state.opt_stop = False
         status_ph.success("Optimización finalizada.")
     else:
-        status_ph.info("Listo para optimizar. Ajustá parámetros y presioná **Iniciar**.")
+        status_ph.info("Listo para optimizar. Presioná ▶️ Iniciar.")
 
-# ---------------- VISUALIZACIÓN DEL MEJOR ESCENARIO ----------------
+# ===============================================================
+# VISUALIZACIÓN DEL MEJOR ESCENARIO
+# ===============================================================
 if results:
     results_sorted = sorted(results, key=lambda r: (r["loss_pct"], r["x3"]))
     best = results_sorted[0]
@@ -807,32 +783,24 @@ if results:
     )
 
     df_best = pd.DataFrame([
-        {
-            "Intervención": a["kind"],
-            "Inicio": str(a["date"]),
-            "Fin": str(pd.to_datetime(a["date"]) + pd.Timedelta(days=int(a["days"]))),
-            "Duración (d)": a["days"],
-            "Eficiencia (%)": a["eff"],
-            "Estados": ",".join(a["states"])
-        }
+        {"Intervención": a["kind"], "Inicio": str(a["date"]),
+         "Fin": str(pd.to_datetime(a["date"]) + pd.Timedelta(days=int(a["days"]))),
+         "Duración (d)": a["days"], "Eficiencia (%)": a["eff"],
+         "Estados": ",".join(a["states"])}
         for a in best["schedule"]
     ])
     st.dataframe(df_best, use_container_width=True)
 
-    # ---------- Gráficos ----------
+    # Recalcular series del mejor escenario
     envb = recompute_for_sow(pd.to_datetime(best["sow"]).date(), int(T12), int(T23), int(T34))
     if envb:
         ts_b = envb["ts"]
         fechas_d_b = envb["fechas_d"]
-        mask_since_b = envb["mask_since"]
         S1p, S2p, S3p, S4p = envb["S_pl"]
         sup_cap_b = envb["sup_cap"]
 
-        # Aplicar controles (sin restricciones)
-        c1 = np.ones_like(fechas_d_b, float)
-        c2 = np.ones_like(fechas_d_b, float)
-        c3 = np.ones_like(fechas_d_b, float)
-        c4 = np.ones_like(fechas_d_b, float)
+        c1 = np.ones_like(fechas_d_b); c2 = np.ones_like(fechas_d_b)
+        c3 = np.ones_like(fechas_d_b); c4 = np.ones_like(fechas_d_b)
 
         def _apply_eval(w, eff, states):
             reduc = np.clip(1.0 - (eff / 100.0) * w, 0.0, 1.0)
@@ -841,7 +809,6 @@ if results:
             if "S3" in states: np.multiply(c3, reduc, out=c3)
             if "S4" in states: np.multiply(c4, reduc, out=c4)
 
-        order = {"preR": 0, "preemR": 1, "postR": 2, "post_gram": 3}
         for a in sorted(best["schedule"], key=lambda x: (order.get(x["kind"], 9), x["date"])):
             ini = pd.to_datetime(a["date"]).date()
             fin = (pd.to_datetime(a["date"]) + pd.Timedelta(days=int(a["days"]))).date()
@@ -849,53 +816,63 @@ if results:
             if np.any(w):
                 _apply_eval(w, a["eff"], a["states"])
 
-        total_ctrl_daily = (S1p * c1 + S2p * c2 + S3p * c3 + S4p * c4)
-        plantas_ctrl_cap_b = np.minimum(total_ctrl_daily, sup_cap_b)
+        total_ctrl = (S1p*c1 + S2p*c2 + S3p*c3 + S4p*c4)
+        plantas_ctrl_cap_b = np.minimum(total_ctrl, sup_cap_b)
 
-        # Gráfico A — EMERREL + tratamientos
+        # --- Gráfico 1: EMERREL + (1−Ciec) + tratamientos ---
         figA = go.Figure()
         figA.add_trace(go.Scatter(x=ts, y=df_plot["EMERREL"], mode="lines", name="EMERREL cruda"))
         figA.add_trace(go.Scatter(x=ts_b, y=sup_cap_b, name="Sin control", yaxis="y2"))
         figA.add_trace(go.Scatter(x=ts_b, y=plantas_ctrl_cap_b, name="Con control", yaxis="y2", line=dict(dash="dot")))
-
         one_minus_best = compute_ciec_for(pd.to_datetime(best["sow"]).date())
         figA.add_trace(go.Scatter(x=ts_b, y=1 - one_minus_best, mode="lines", name="Ciec", yaxis="y3"))
-
         for a in best["schedule"]:
-            x0 = pd.to_datetime(a["date"])
-            x1 = x0 + pd.Timedelta(days=int(a["days"]))
-            figA.add_vrect(x0=x0, x1=x1, fillcolor="rgba(30,144,255,0.18)", opacity=0.18, line_width=0)
-            figA.add_annotation(x=x0 + (x1 - x0) / 2, y=0.9, xref="x", yref="paper",
-                                text=a["kind"], showarrow=False, bgcolor="rgba(30,144,255,0.7)")
-
+            x0 = pd.to_datetime(a["date"]); x1 = x0 + pd.Timedelta(days=int(a["days"]))
+            figA.add_vrect(x0=x0, x1=x1, fillcolor="rgba(30,144,255,0.15)", opacity=0.15, line_width=0)
+            figA.add_annotation(x=x0+(x1-x0)/2, y=0.9, xref="x", yref="paper", text=a["kind"],
+                                showarrow=False, bgcolor="rgba(30,144,255,0.7)")
         figA.update_layout(title="🌾 EMERREL + (1−Ciec) + Tratamientos",
                            xaxis_title="Fecha", yaxis_title="EMERREL",
                            yaxis2=dict(overlaying="y", side="right", title="pl·m²"),
-                           yaxis3=dict(overlaying="y", side="right", title="Ciec", range=[0, 1]))
+                           yaxis3=dict(overlaying="y", side="right", title="Ciec", range=[0,1]))
         st.plotly_chart(figA, use_container_width=True)
 
-        # Gráfico B — Pérdida
-        X2_b = best["x2"]; X3_b = best["x3"]
+        # --- Gráfico 2: Pérdida ---
+        X2_b, X3_b = best["x2"], best["x3"]
         x_curve = np.linspace(0.0, MAX_PLANTS_CAP, 400)
         figB = go.Figure()
         figB.add_trace(go.Scatter(x=x_curve, y=_loss(x_curve), mode="lines", name="Función pérdida"))
-        figB.add_trace(go.Scatter(x=[X2_b], y=[_loss(X2_b)], mode="markers+text", name="x₂", text=["x₂"], textposition="top center"))
-        figB.add_trace(go.Scatter(x=[X3_b], y=[_loss(X3_b)], mode="markers+text", name="x₃", text=["x₃"], textposition="top right"))
+        figB.add_trace(go.Scatter(x=[X2_b], y=[_loss(X2_b)], mode="markers+text", text=["x₂"], textposition="top center"))
+        figB.add_trace(go.Scatter(x=[X3_b], y=[_loss(X3_b)], mode="markers+text", text=["x₃"], textposition="top right"))
         figB.update_layout(title="Pérdida vs densidad efectiva", xaxis_title="x (pl·m²)", yaxis_title="Pérdida (%)")
         st.plotly_chart(figB, use_container_width=True)
 
-        # Gráfico C — S1–S4 semanales
-        df_states_week = (
-            pd.DataFrame({"fecha": ts_b, "S1": S1p * c1, "S2": S2p * c2, "S3": S3p * c3, "S4": S4p * c4})
-            .set_index("fecha").resample("W-MON").sum().reset_index()
-        )
+        # --- Gráfico 3: Estados semanales ---
+        df_states = (pd.DataFrame({"fecha": ts_b, "S1": S1p*c1, "S2": S2p*c2, "S3": S3p*c3, "S4": S4p*c4})
+                     .set_index("fecha").resample("W-MON").sum().reset_index())
         figC = go.Figure()
-        for s in ["S1", "S2", "S3", "S4"]:
-            figC.add_trace(go.Scatter(x=df_states_week["fecha"], y=df_states_week[s],
-                                      name=s, stackgroup="one", mode="lines"))
+        for s in ["S1","S2","S3","S4"]:
+            figC.add_trace(go.Scatter(x=df_states["fecha"], y=df_states[s], name=s, stackgroup="one"))
         figC.update_layout(title="Dinámica semanal S1–S4 (con control)",
                            xaxis_title="Fecha", yaxis_title="pl·m²·sem⁻¹")
-        st
+        st.plotly_chart(figC, use_container_width=True)
+else:
+    st.info("Aún no hay resultados de optimización para mostrar.")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
