@@ -191,7 +191,7 @@ with st.sidebar:
     use_ciec = st.checkbox("Calcular y mostrar Ciec", value=True)
     Ca = st.number_input("Densidad real Ca (pl/m²)", 50, 700, 250, 10)
     Cs = st.number_input("Densidad estándar Cs (pl/m²)", 50, 700, 250, 10)
-    LAIhc = st.number_input("LAIhc (escenario altamente competitivo)", 0.5, 10.0, 6.0, 0.1)
+    LAIhc = st.number_input("LAIhc (escenario altamente competitivo)", 3.0, 6.0, 3.0, 0.1)
 
 if not (sow_min <= sow_date <= sow_max):
     st.error("La fecha de siembra debe estar entre el 1 de mayo y el 1 de julio."); st.stop()
