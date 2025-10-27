@@ -15,8 +15,8 @@ import io, re, math, datetime as dt
 import numpy as np
 import pandas as pd
 import streamlit as st
-import itertools
 import plotly.graph_objects as go
+import itertools, random   # ✅ ← AÑADIR ESTA LÍNEA
 from datetime import timedelta
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
