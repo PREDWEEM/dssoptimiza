@@ -187,8 +187,23 @@ st.caption(f"AUC(EMERREL cruda) ≙ A2 **= {int(MAX_PLANTS_CAP)} pl·m²**. Coho
 
 # ------------------ ESTADOS FENOLÓGICOS SECUENCIALES (S1→S4) ------------------
 ts = pd.to_datetime(df_plot["fecha"])
-mask_since_sow = (ts.dt.date >= st.session_state.get("sow_date_cache", None) or True)  # dummy para inicializar
-mask_since_sow = (ts.dt.date >= st.session_state.get("sow_date_cache", sow_date))
+# ===============================================================
+# Construcción de máscara desde siembra (segura)
+# ===============================================================
+
+ts = df_plot["fecha"]
+
+# Recuperar fecha de siembra desde sesión, si existe
+sow_ref = st.session_state.get("sow_date_cache", None)
+
+if sow_ref is not None:
+    mask_since_sow = ts.dt.date >= sow_ref
+else:
+    # Si no hay siembra previa en caché, marcar todo como válido
+    mask_since_sow = pd.Series(True, index=ts.index)
+
+# Actualizar sesión
+st.session_state["sow_date_cache"] = sow_date
 
 # EMERREL diario (0–1) restringido a partir de siembra real
 births = df_plot["EMERREL"].astype(float).clip(lower=0.0).to_numpy()
