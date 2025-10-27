@@ -15,6 +15,7 @@ import io, re, math, datetime as dt
 import numpy as np
 import pandas as pd
 import streamlit as st
+import itertools
 import plotly.graph_objects as go
 from datetime import timedelta
 from urllib.request import urlopen, Request
