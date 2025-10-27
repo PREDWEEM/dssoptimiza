@@ -6,8 +6,8 @@
 # Reglas:
 # - Presiembra selectivo residual (preR): SOLO ≤ siembra−14 (actúa S1–S2)
 # - Preemergente selectivo residual (preemR): [siembra, siembra+10] (S1–S2)
-# - Post-residual (postR): ≥ siembra+20 (S1–S4)
-# - Graminicida post: ventana siembra..siembra+10 (S1–S3)
+# - Post-residual (postR): ≥ siembra+20 (S1–S3)
+# - Graminicida post: ventana siembra..siembra+10 (S1–S4)
 # Lógica nueva:
 # - Gateo por remanente (window-aware) + Exclusión jerárquica:
 #   preR → preemR → postR → gram. Cada uno se aplica SOLO si queda remanente
@@ -346,7 +346,7 @@ with st.sidebar:
     post_gram_date = st.date_input("Fecha graminicida (post)", value=max(min_date, sow_date), min_value=min_date, max_value=max_date, disabled=not post_gram)
 
     post_selR = st.checkbox("Selectivo + residual (post)", value=False,
-                            help="Regla: ≥ siembra + 20 días. Actúa S1–S4.")
+                            help="Regla: ≥ siembra + 20 días. Actúa S1–S3.")
     post_min_postR = max(min_date, sow_date + timedelta(days=20))
     post_selR_date = st.date_input("Fecha selectivo + residual (post)", value=post_min_postR, min_value=post_min_postR, max_value=max_date, disabled=not post_selR)
     post_res_dias = st.slider("Residualidad post (días)", 30, 120, 45, 1, disabled=not post_selR)
@@ -496,12 +496,12 @@ if factor_area_to_plants is not None:
         if _remaining_in_window(w, ["S1","S2","S3","S4"], ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4) > EPS_REMAIN and ef_pre_glifo > 0:
             apply_efficiency_per_state(w, ef_pre_glifo, ["S1","S2","S3","S4"])
 
-    # 4) Post residual (S1–S4) — solo si acumulado previo < 99% y hay remanente
+    # 4) Post residual (S1–S3) — solo si acumulado previo < 99% y hay remanente
     postR_applied = False
     if post_selR and (eff_accum_pre2 < EPS_EXCLUDE):
         w_postR = weights_residual(post_selR_date, post_res_dias)
-        if _remaining_in_window(w_postR, ["S1","S2","S3","S4"], ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4) > EPS_REMAIN and ef_post_selR > 0:
-            apply_efficiency_per_state(w_postR, ef_post_selR, ["S1","S2","S3","S4"])
+        if _remaining_in_window(w_postR, ["S1","S2","S3""], ctrl_S1, ctrl_S2, ctrl_S3,ctrl_S4) > EPS_REMAIN and ef_post_selR > 0:
+            apply_efficiency_per_state(w_postR, ef_post_selR, ["S1","S2","S3"])
             postR_applied = True
             eff_accum_all = _eff_from_to(eff_accum_pre2, ef_post_selR/100.0)
         else:
@@ -509,11 +509,11 @@ if factor_area_to_plants is not None:
     else:
         eff_accum_all = eff_accum_pre2
 
-    # 5) Graminicida post (S1–S3) — solo si acumulado previo < 99% y hay remanente
+    # 5) Graminicida post (S1–S4) — solo si acumulado previo < 99% y hay remanente
     if post_gram and (eff_accum_all < EPS_EXCLUDE):
         w_gram = weights_residual(post_gram_date, POST_GRAM_FORWARD_DAYS)
-        if _remaining_in_window(w_gram, ["S1","S2","S3"], ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4) > EPS_REMAIN and ef_post_gram > 0:
-            apply_efficiency_per_state(w_gram, ef_post_gram, ["S1","S2","S3"])
+        if _remaining_in_window(w_gram, ["S1","S2","S3","S4"], ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4) > EPS_REMAIN and ef_post_gram > 0:
+            apply_efficiency_per_state(w_gram, ef_post_gram, ["S1","S2","S3","S4"])
 
     # Series con control aplicado
     S1_pl_ctrl = S1_pl * ctrl_S1
@@ -632,8 +632,8 @@ with st.sidebar:
 
     use_preR_opt      = st.checkbox("Incluir presiembra + residual (≤ siembra−14; S1–S2)", value=True)
     use_preemR_opt    = st.checkbox("Incluir preemergente + residual (siembra..siembra+10; S1–S2)", value=True)
-    use_post_selR_opt = st.checkbox("Incluir post + residual (≥ siembra + 20; S1–S4)", value=True)
-    use_post_gram_opt = st.checkbox(f"Incluir graminicida post (+{POST_GRAM_FORWARD_DAYS-1}d; S1–S3)", value=True)
+    use_post_selR_opt = st.checkbox("Incluir post + residual (≥ siembra + 20; S1–S3)", value=True)
+    use_post_gram_opt = st.checkbox(f"Incluir graminicida post (+{POST_GRAM_FORWARD_DAYS-1}d; S1–S4)", value=True)
 
     ef_preR_opt      = st.slider("Eficiencia presiembraR (%)", 0, 100, 90, 1)   if use_preR_opt else 0
     ef_preemR_opt    = st.slider("Eficiencia preemergenteR (%)", 0, 100, 90, 1) if use_preemR_opt else 0
@@ -784,8 +784,8 @@ def recompute_for_sow(sow_d: dt.date, T12: int, T23: int, T34: int):
 # ===================== ACCIONES (con reglas) =====================
 def act_presiembraR(date_val, R, eff): return {"kind":"preR",   "date": pd.to_datetime(date_val).date(), "days": int(R), "eff": eff, "states": ["S1","S2"]}
 def act_preemR(date_val, R, eff):     return {"kind":"preemR",  "date": pd.to_datetime(date_val).date(), "days": int(R), "eff": eff, "states": ["S1","S2"]}
-def act_post_selR(date_val, R, eff):  return {"kind":"postR",   "date": pd.to_datetime(date_val).date(), "days": int(R), "eff": eff, "states": ["S1","S2","S3","S4"]}
-def act_post_gram(date_val, eff):     return {"kind":"post_gram","date": pd.to_datetime(date_val).date(), "days": POST_GRAM_FORWARD_DAYS, "eff": eff, "states": ["S1","S2","S3"]}
+def act_post_selR(date_val, R, eff):  return {"kind":"postR",   "date": pd.to_datetime(date_val).date(), "days": int(R), "eff": eff, "states": ["S1","S2","S3"]}
+def act_post_gram(date_val, eff):     return {"kind":"post_gram","date": pd.to_datetime(date_val).date(), "days": POST_GRAM_FORWARD_DAYS, "eff": eff, "states": ["S1","S2","S3","S4"]}
 
 # ===================== EVALUACIÓN DE UN CRONOGRAMA =====================
 def evaluate(sd: dt.date, schedule: list):
