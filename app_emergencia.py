@@ -556,6 +556,98 @@ st.markdown(
 )
 
 # ===============================================================
+# 🌾 CONTROLES DE OPTIMIZACIÓN — SIDEBAR STREAMLIT
+# ===============================================================
+
+st.sidebar.header("⚙️ Parámetros de Optimización")
+
+# ----- Tipo de optimizador -----
+optimizer = st.sidebar.selectbox(
+    "Método de optimización",
+    ["Grid (combinatorio)", "Búsqueda aleatoria", "Recocido simulado"],
+    index=0,
+    key="optimizer"
+)
+
+max_evals = st.sidebar.number_input(
+    "Máx. combinaciones / iteraciones",
+    min_value=10, max_value=5000, value=500, step=10
+)
+
+# ----- Parámetros de Recocido Simulado -----
+with st.sidebar.expander("🔥 Parámetros de recocido simulado"):
+    sa_T0 = st.number_input("Temperatura inicial (T0)", min_value=0.001, value=1.0, step=0.1)
+    sa_cooling = st.number_input("Factor de enfriamiento (0–1)", min_value=0.80, max_value=0.999, value=0.95, step=0.01)
+    sa_iters = st.number_input("Iteraciones totales", min_value=50, max_value=5000, value=500, step=10)
+
+# ===============================================================
+# 🎯 PARÁMETROS DE CONTROL Y RESIDUALIDAD
+# ===============================================================
+
+st.sidebar.subheader("🧪 Eficiencias y residualidades")
+
+# ----- Presiembra -----
+use_preR_opt = st.sidebar.checkbox("Usar presiembra residual", value=True)
+ef_preR_opt = st.sidebar.slider("Eficiencia presiembra (%)", 0, 100, 90, 5)
+res_days_preR = st.sidebar.multiselect(
+    "Duración presiembra (días de residualidad)",
+    [10, 15, 20, 25, 30],
+    default=[20]
+)
+
+# ----- Preemergente -----
+use_preemR_opt = st.sidebar.checkbox("Usar preemergente residual", value=True)
+ef_preemR_opt = st.sidebar.slider("Eficiencia preemergente (%)", 0, 100, 85, 5)
+res_days_preemR = st.sidebar.multiselect(
+    "Duración preemergente (días de residualidad)",
+    [10, 15, 20, 25, 30],
+    default=[15]
+)
+
+# ----- Post-residual -----
+use_post_selR_opt = st.sidebar.checkbox("Usar postemergente residual", value=True)
+ef_post_selR_opt = st.sidebar.slider("Eficiencia post-residual (%)", 0, 100, 80, 5)
+res_days_postR = st.sidebar.multiselect(
+    "Duración post-residual (días de residualidad)",
+    [10, 15, 20, 25, 30, 40],
+    default=[20]
+)
+
+# ----- Graminicida post -----
+use_post_gram_opt = st.sidebar.checkbox("Usar graminicida postemergente", value=True)
+ef_post_gram_opt = st.sidebar.slider("Eficiencia graminicida (%)", 0, 100, 95, 5)
+
+# ===============================================================
+# 🚀 CONTROLES DE EJECUCIÓN
+# ===============================================================
+st.sidebar.subheader("▶️ Ejecución del optimizador")
+
+col1, col2 = st.sidebar.columns(2)
+
+start_clicked = col1.button("▶️ Iniciar", use_container_width=True)
+stop_clicked  = col2.button("🛑 Detener", use_container_width=True)
+
+if "opt_running" not in st.session_state:
+    st.session_state.opt_running = False
+if "opt_stop" not in st.session_state:
+    st.session_state.opt_stop = False
+
+if start_clicked and not st.session_state.opt_running:
+    st.session_state.opt_running = True
+    st.session_state.opt_stop = False
+elif stop_clicked and st.session_state.opt_running:
+    st.session_state.opt_stop = True
+
+
+
+
+
+
+
+
+
+
+# ===============================================================
 # 🌾 OPTIMIZADOR COMPLETO — SIN RESTRICCIÓN DE SOLAPAMIENTO
 # ===============================================================
 
