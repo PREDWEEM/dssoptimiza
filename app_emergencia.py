@@ -611,6 +611,34 @@ st.markdown(
 **A2 (ctrl, cap):** **{A2_ctrl_final if np.isfinite(A2_ctrl_final) else float('nan'):.1f}** pl·m²
 """
 )
+# =====================================================
+# FUNCION compute_ciec_for — calcula la supresión del cultivo (1−Ciec)
+# =====================================================
+
+def compute_ciec_for(sow_date: dt.date):
+    """
+    Devuelve un vector con (1−Ciec) para cada fecha del horizonte ts,
+    según la fecha de siembra y la curva de crecimiento de LAI (logística).
+    """
+    days = (ts.dt.date - sow_date).dt.days.to_numpy()
+    lai = np.zeros_like(days, dtype=float)
+
+    # crecimiento logístico de LAI
+    lai_max = float(st.session_state.get("LAI_MAX", 4.0))
+    t_lag = int(st.session_state.get("T_LAG", 10))
+    t_close = int(st.session_state.get("T_CLOSE", 80))
+    k_beer = float(st.session_state.get("K_BEER", 0.6))
+
+    # función logística básica
+    lai = lai_max / (1.0 + np.exp(-0.15 * (days - t_close/2)))
+    lai = np.clip(lai, 0.0, lai_max)
+
+    # Ciec según Beer–Lambert
+    ciec = 1.0 - np.exp(-k_beer * lai)
+    ciec[days < t_lag] = 0.0
+
+    one_minus = 1.0 - ciec
+    return one_minus
 
 # =====================================================
 # FUNCION RECOMPUTE_FOR_SOW — recalcula todo para una fecha de siembra
