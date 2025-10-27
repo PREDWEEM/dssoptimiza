@@ -886,11 +886,12 @@ def evaluate(sd: dt.date, schedule: list):
     return {"sow": sd, "loss_pct": float(loss3), "x2": X2loc, "x3": X3loc,
             "A2_sup": A2_sup, "A2_ctrl": A2_ctrl, "schedule": schedule}
 
-    # -------- Reaplicar agenda (con jerarquía y gateo) — MODIFICADO
-c1 = np.ones_like(ts_b, float)
-c2 = np.ones_like(ts_b, float)
-c3 = np.ones_like(ts_b, float)
-c4 = np.ones_like(ts_b, float)
+   # -------- Reaplicar agenda (con jerarquía y gateo) — CORREGIDO
+fechas_eval = envb.get("fechas_d", envb.get("ts"))
+c1 = np.ones_like(fechas_eval, float)
+c2 = np.ones_like(fechas_eval, float)
+c3 = np.ones_like(fechas_eval, float)
+c4 = np.ones_like(fechas_eval, float)
 
 def _remaining_in_window_eval(w, states):
     rem = 0.0
@@ -901,8 +902,9 @@ def _remaining_in_window_eval(w, states):
     return float(rem)
 
 def _apply_eval(w, eff, states):
-    if eff <= 0: return False
-    reduc = np.clip(1.0 - (eff/100.0)*np.clip(w,0.0,1.0), 0.0, 1.0)
+    if eff <= 0:
+        return False
+    reduc = np.clip(1.0 - (eff / 100.0) * np.clip(w, 0.0, 1.0), 0.0, 1.0)
     if "S1" in states: np.multiply(c1, reduc, out=c1)
     if "S2" in states: np.multiply(c2, reduc, out=c2)
     if "S3" in states: np.multiply(c3, reduc, out=c3)
@@ -913,7 +915,7 @@ eff_accum_pre = eff_accum_pre2 = eff_accum_all = 0.0
 def _eff_from_to(prev_eff, this_eff):
     return 1.0 - (1.0 - prev_eff) * (1.0 - this_eff)
 
-order = {"preR":0,"preemR":1,"postR":2,"post_gram":3}
+order = {"preR": 0, "preemR": 1, "postR": 2, "post_gram": 3}
 
 # 🔸 Determinar fin del postR
 fin_postR = None
@@ -924,35 +926,40 @@ for a in best["schedule"]:
 for a in sorted(best["schedule"], key=lambda a: order.get(a["kind"], 9)):
     ini = pd.to_datetime(a["date"]).date()
     fin = (pd.to_datetime(a["date"]) + pd.Timedelta(days=int(a["days"]))).date()
-    w = ((ts_b.dt.date >= ini) & (ts_b.dt.date < fin)).astype(float)
+    w = ((pd.to_datetime(fechas_eval).date >= ini) & (pd.to_datetime(fechas_eval).date < fin)).astype(float)
+
     if a["kind"] == "preR":
-        if _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN and a["eff"] > 0:
-            _apply_eval(w, a["eff"], ["S1","S2"])
-            eff_accum_pre = _eff_from_to(0.0, a["eff"]/100.0)
+        if _remaining_in_window_eval(w, ["S1", "S2"]) > EPS_REMAIN and a["eff"] > 0:
+            _apply_eval(w, a["eff"], ["S1", "S2"])
+            eff_accum_pre = _eff_from_to(0.0, a["eff"] / 100.0)
+
     elif a["kind"] == "preemR":
         if eff_accum_pre < EPS_EXCLUDE and a["eff"] > 0 and \
-           _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN:
-            _apply_eval(w, a["eff"], ["S1","S2"])
-            eff_accum_pre2 = _eff_from_to(eff_accum_pre, a["eff"]/100.0)
+           _remaining_in_window_eval(w, ["S1", "S2"]) > EPS_REMAIN:
+            _apply_eval(w, a["eff"], ["S1", "S2"])
+            eff_accum_pre2 = _eff_from_to(eff_accum_pre, a["eff"] / 100.0)
         else:
             eff_accum_pre2 = eff_accum_pre
+
     elif a["kind"] == "postR":
         # 🔹 postR actúa solo sobre S1–S2
         if eff_accum_pre2 < EPS_EXCLUDE and a["eff"] > 0 and \
-           _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN:
-            _apply_eval(w, a["eff"], ["S1","S2"])
-            eff_accum_all = _eff_from_to(eff_accum_pre2, a["eff"]/100.0)
+           _remaining_in_window_eval(w, ["S1", "S2"]) > EPS_REMAIN:
+            _apply_eval(w, a["eff"], ["S1", "S2"])
+            eff_accum_all = _eff_from_to(eff_accum_pre2, a["eff"] / 100.0)
         else:
             eff_accum_all = eff_accum_pre2
+
     elif a["kind"] == "post_gram":
         # 🔹 graminicida solo si ocurre después del fin del postR
         if fin_postR is not None:
             allow_after_postR = pd.to_datetime(a["date"]) >= fin_postR
         else:
             allow_after_postR = True
+
         if allow_after_postR and eff_accum_all < EPS_EXCLUDE and a["eff"] > 0 and \
-           _remaining_in_window_eval(w, ["S1","S2","S3"]) > EPS_REMAIN:
-            _apply_eval(w, a["eff"], ["S1","S2","S3"])
+           _remaining_in_window_eval(w, ["S1", "S2", "S3"]) > EPS_REMAIN:
+            _apply_eval(w, a["eff"], ["S1", "S2", "S3"])
 
 
    
