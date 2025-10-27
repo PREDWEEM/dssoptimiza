@@ -613,44 +613,114 @@ st.markdown(
 )
 
 # =====================================================
-# FUNCIONES DE ACCIONES BÁSICAS (deben ir antes del optimizador)
+# FUNCIONES DE ACCIONES Y EVALUACIÓN (deben estar antes del optimizador)
 # =====================================================
 
 def act_presiembraR(date_val, R, eff):
-    return {
-        "kind": "preR",
-        "date": pd.to_datetime(date_val).date(),
-        "days": int(R),
-        "eff": eff,
-        "states": ["S1", "S2"]
-    }
+    return {"kind": "preR", "date": pd.to_datetime(date_val).date(), "days": int(R),
+            "eff": eff, "states": ["S1", "S2"]}
 
 def act_preemR(date_val, R, eff):
-    return {
-        "kind": "preemR",
-        "date": pd.to_datetime(date_val).date(),
-        "days": int(R),
-        "eff": eff,
-        "states": ["S1", "S2"]
-    }
+    return {"kind": "preemR", "date": pd.to_datetime(date_val).date(), "days": int(R),
+            "eff": eff, "states": ["S1", "S2"]}
 
 def act_post_selR(date_val, R, eff):
-    return {
-        "kind": "postR",
-        "date": pd.to_datetime(date_val).date(),
-        "days": int(R),
-        "eff": eff,
-        "states": ["S1", "S2", "S3", "S4"]
-    }
+    return {"kind": "postR", "date": pd.to_datetime(date_val).date(), "days": int(R),
+            "eff": eff, "states": ["S1", "S2", "S3", "S4"]}
 
 def act_post_gram(date_val, eff):
-    return {
-        "kind": "post_gram",
-        "date": pd.to_datetime(date_val).date(),
-        "days": POST_GRAM_FORWARD_DAYS,
-        "eff": eff,
-        "states": ["S1", "S2", "S3"]
-    }
+    return {"kind": "post_gram", "date": pd.to_datetime(date_val).date(),
+            "days": POST_GRAM_FORWARD_DAYS, "eff": eff, "states": ["S1", "S2", "S3"]}
+
+# =====================================================
+# FUNCIÓN DE EVALUACIÓN (usada por el optimizador)
+# =====================================================
+def evaluate(sd: dt.date, schedule: list):
+    sow = pd.to_datetime(sd)
+    sow_plus_20 = sow + pd.Timedelta(days=20)
+
+    # Validación agronómica
+    for a in schedule:
+        d = pd.to_datetime(a["date"])
+        if a["kind"] == "postR" and d < sow_plus_20: return None
+        if a["kind"] == "preR" and d > (sow - pd.Timedelta(days=PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW)): return None
+        if a["kind"] == "preemR" and (d < sow or d > (sow + pd.Timedelta(days=PREEM_R_MAX_AFTER_SOW_DAYS))): return None
+
+    env = recompute_for_sow(sd, int(T12), int(T23), int(T34))
+    if env is None: return None
+    mask_since = env["mask_since"]; factor_area = env["factor_area"]
+    S1_pl, S2_pl, S3_pl, S4_pl = env["S_pl"]; sup_cap = env["sup_cap"]
+    ts_local, fechas_d_local = env["ts"], env["fechas_d"]
+
+    # controles
+    c1 = np.ones_like(fechas_d_local, float)
+    c2 = np.ones_like(fechas_d_local, float)
+    c3 = np.ones_like(fechas_d_local, float)
+    c4 = np.ones_like(fechas_d_local, float)
+
+    def _remaining_in_window_eval(w, states):
+        rem = 0.0
+        if "S1" in states: rem += np.sum(S1_pl * c1 * w)
+        if "S2" in states: rem += np.sum(S2_pl * c2 * w)
+        if "S3" in states: rem += np.sum(S3_pl * c3 * w)
+        if "S4" in states: rem += np.sum(S4_pl * c4 * w)
+        return float(rem)
+
+    def _apply_eval(w, eff, states):
+        if eff <= 0: return False
+        reduc = np.clip(1.0 - (eff/100.0)*np.clip(w,0.0,1.0), 0.0, 1.0)
+        if "S1" in states: np.multiply(c1, reduc, out=c1)
+        if "S2" in states: np.multiply(c2, reduc, out=c2)
+        if "S3" in states: np.multiply(c3, reduc, out=c3)
+        if "S4" in states: np.multiply(c4, reduc, out=c4)
+        return True
+
+    eff_accum_pre = eff_accum_pre2 = eff_accum_all = 0.0
+    def _eff_from_to(prev_eff, this_eff): return 1.0 - (1.0 - prev_eff) * (1.0 - this_eff)
+
+    order = {"preR":0,"preemR":1,"postR":2,"post_gram":3}
+    for a in sorted(schedule, key=lambda a: order.get(a["kind"], 9)):
+        d0, d1 = a["date"], a["date"] + pd.Timedelta(days=int(a["days"]))
+        w = ((fechas_d_local >= d0) & (fechas_d_local < d1)).astype(float)
+        if a["kind"] == "preR":
+            if _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN:
+                _apply_eval(w, a["eff"], ["S1","S2"])
+                eff_accum_pre = _eff_from_to(0.0, a["eff"]/100.0)
+        elif a["kind"] == "preemR":
+            if eff_accum_pre < EPS_EXCLUDE and _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN:
+                _apply_eval(w, a["eff"], ["S1","S2"])
+                eff_accum_pre2 = _eff_from_to(eff_accum_pre, a["eff"]/100.0)
+        elif a["kind"] == "postR":
+            if eff_accum_pre2 < EPS_EXCLUDE and _remaining_in_window_eval(w, ["S1","S2","S3","S4"]) > EPS_REMAIN:
+                _apply_eval(w, a["eff"], ["S1","S2","S3","S4"])
+                eff_accum_all = _eff_from_to(eff_accum_pre2, a["eff"]/100.0)
+        elif a["kind"] == "post_gram":
+            if eff_accum_all < EPS_EXCLUDE and _remaining_in_window_eval(w, ["S1","S2","S3"]) > EPS_REMAIN:
+                _apply_eval(w, a["eff"], ["S1","S2","S3"])
+
+    tot_ctrl = S1_pl*c1 + S2_pl*c2 + S3_pl*c3 + S4_pl*c4
+    plantas_ctrl_cap = np.minimum(tot_ctrl, sup_cap)
+
+    X2loc = float(np.nansum(sup_cap[mask_since]))
+    X3loc = float(np.nansum(plantas_ctrl_cap[mask_since]))
+    loss3 = _loss(X3loc)
+
+    auc_cruda_loc = env["auc_cruda"]
+    sup_equiv  = np.divide(sup_cap, factor_area, out=np.zeros_like(sup_cap), where=(factor_area>0))
+    ctrl_equiv = np.divide(plantas_ctrl_cap, factor_area, out=np.zeros_like(plantas_ctrl_cap), where=(factor_area>0))
+    auc_sup      = auc_time(ts_local, sup_equiv,  mask=mask_since)
+    auc_sup_ctrl = auc_time(ts_local, ctrl_equiv, mask=mask_since)
+    A2_sup  = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP*(auc_sup/auc_cruda_loc))
+    A2_ctrl = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP*(auc_sup_ctrl/auc_cruda_loc))
+
+    return {"sow": sd, "loss_pct": float(loss3), "x2": X2loc, "x3": X3loc,
+            "A2_sup": A2_sup, "A2_ctrl": A2_ctrl, "schedule": schedule}
+
+
+
+
+
+
 
 # =====================================================
 #                OPTIMIZACIÓN (residualidades separadas)
