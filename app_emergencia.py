@@ -554,8 +554,6 @@ st.markdown(
 **A2 (ctrl, cap):** **{A2_ctrl_final if np.isfinite(A2_ctrl_final) else float('nan'):.1f}** pl·m²
 """
 )
-
-
 # ===============================================================
 # 🌾 OPTIMIZADOR COMPLETO — SIN RESTRICCIÓN DE SOLAPAMIENTO
 # ===============================================================
@@ -898,18 +896,6 @@ if results:
         figC.update_layout(title="Dinámica semanal S1–S4 (con control)",
                            xaxis_title="Fecha", yaxis_title="pl·m²·sem⁻¹")
         st
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
