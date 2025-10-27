@@ -574,6 +574,86 @@ else:
         # ---------------------------------------------
         optimizer = st.session_state.get("optimizer", "Grid (combinatorio)")
 
+
+
+
+
+        # ===============================================================
+# 🔧 FUNCIONES BASE PARA GENERAR ESCENARIOS (sin restricciones)
+# ===============================================================
+
+def build_all_scenarios():
+    """Genera todas las combinaciones posibles de escenarios."""
+    scenarios = []
+    for sd in sow_candidates:
+        grp = []
+        if use_preR_opt:
+            grp.append([act_presiembraR(d, R, ef_preR_opt)
+                        for d in pre_sow_dates(sd)
+                        for R in res_days_preR])
+        if use_preemR_opt:
+            grp.append([act_preemR(d, R, ef_preemR_opt)
+                        for d in preem_dates(sd)
+                        for R in res_days_preemR])
+        if use_post_selR_opt:
+            grp.append([act_post_selR(d, R, ef_post_selR_opt)
+                        for d in post_dates(sd)
+                        for R in res_days_postR])
+        if use_post_gram_opt:
+            grp.append([act_post_gram(d, ef_post_gram_opt)
+                        for d in post_dates(sd)])
+
+        combos = [[]]
+        for r in range(1, len(grp) + 1):
+            for subset in itertools.combinations(range(len(grp)), r):
+                for p in itertools.product(*[grp[i] for i in subset]):
+                    combos.append(list(p))
+        scenarios.extend([(pd.to_datetime(sd).date(), sch) for sch in combos])
+
+    st.caption(f"Escenarios generados: {len(scenarios):,}")
+    return scenarios
+
+
+def sample_random_scenario():
+    """Genera un escenario aleatorio (válido o vacío si no hay)."""
+    for _ in range(200):
+        sd = random.choice(sow_candidates)
+        schedule = []
+        if use_preR_opt and random.random() < 0.7:
+            cand = pre_sow_dates(sd)
+            if cand:
+                schedule.append(
+                    act_presiembraR(random.choice(cand),
+                                    random.choice(res_days_preR),
+                                    ef_preR_opt)
+                )
+        if use_preemR_opt and random.random() < 0.7:
+            cand = preem_dates(sd)
+            if cand:
+                schedule.append(
+                    act_preemR(random.choice(cand),
+                               random.choice(res_days_preemR),
+                               ef_preemR_opt)
+                )
+        if use_post_selR_opt and random.random() < 0.7:
+            cand = post_dates(sd)
+            if cand:
+                schedule.append(
+                    act_post_selR(random.choice(cand),
+                                  random.choice(res_days_postR),
+                                  ef_post_selR_opt)
+                )
+        if use_post_gram_opt and random.random() < 0.7:
+            cand = post_dates(sd)
+            if cand:
+                schedule.append(
+                    act_post_gram(random.choice(cand),
+                                  ef_post_gram_opt)
+                )
+        if schedule:
+            return (pd.to_datetime(sd).date(), schedule)
+    return (pd.to_datetime(sd).date(), [])
+
         if optimizer == "Grid (combinatorio)":
             scenarios = build_all_scenarios()
             total = len(scenarios)
