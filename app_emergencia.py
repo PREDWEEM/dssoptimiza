@@ -500,8 +500,8 @@ if factor_area_to_plants is not None:
     postR_applied = False
     if post_selR and (eff_accum_pre2 < EPS_EXCLUDE):
         w_postR = weights_residual(post_selR_date, post_res_dias)
-        if _remaining_in_window(w_postR, ["S1","S2","S3","S4"], ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4) > EPS_REMAIN and ef_post_selR > 0:
-            apply_efficiency_per_state(w_postR, ef_post_selR, ["S1","S2","S3","S4"])
+        if _remaining_in_window(w_postR, ["S1","S2","S3"], ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4) > EPS_REMAIN and ef_post_selR > 0:
+            apply_efficiency_per_state(w_postR, ef_post_selR, ["S1","S2","S3"])
             postR_applied = True
             eff_accum_all = _eff_from_to(eff_accum_pre2, ef_post_selR/100.0)
         else:
@@ -512,8 +512,8 @@ if factor_area_to_plants is not None:
     # 5) Graminicida post (S1–S3) — solo si acumulado previo < 99% y hay remanente
     if post_gram and (eff_accum_all < EPS_EXCLUDE):
         w_gram = weights_residual(post_gram_date, POST_GRAM_FORWARD_DAYS)
-        if _remaining_in_window(w_gram, ["S1","S2","S3"], ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4) > EPS_REMAIN and ef_post_gram > 0:
-            apply_efficiency_per_state(w_gram, ef_post_gram, ["S1","S2","S3"])
+        if _remaining_in_window(w_gram, ["S1","S2","S3","S4"], ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4) > EPS_REMAIN and ef_post_gram > 0:
+            apply_efficiency_per_state(w_gram, ef_post_gram, ["S1","S2","S3","S4"])
 
     # Series con control aplicado
     S1_pl_ctrl = S1_pl * ctrl_S1
@@ -784,8 +784,8 @@ def recompute_for_sow(sow_d: dt.date, T12: int, T23: int, T34: int):
 # ===================== ACCIONES (con reglas) =====================
 def act_presiembraR(date_val, R, eff): return {"kind":"preR",   "date": pd.to_datetime(date_val).date(), "days": int(R), "eff": eff, "states": ["S1","S2"]}
 def act_preemR(date_val, R, eff):     return {"kind":"preemR",  "date": pd.to_datetime(date_val).date(), "days": int(R), "eff": eff, "states": ["S1","S2"]}
-def act_post_selR(date_val, R, eff):  return {"kind":"postR",   "date": pd.to_datetime(date_val).date(), "days": int(R), "eff": eff, "states": ["S1","S2","S3","S4"]}
-def act_post_gram(date_val, eff):     return {"kind":"post_gram","date": pd.to_datetime(date_val).date(), "days": POST_GRAM_FORWARD_DAYS, "eff": eff, "states": ["S1","S2","S3"]}
+def act_post_selR(date_val, R, eff):  return {"kind":"postR",   "date": pd.to_datetime(date_val).date(), "days": int(R), "eff": eff, "states": ["S1","S2","S3"]}
+def act_post_gram(date_val, eff):     return {"kind":"post_gram","date": pd.to_datetime(date_val).date(), "days": POST_GRAM_FORWARD_DAYS, "eff": eff, "states": ["S1","S2","S3","S4"]}
 
 # ===================== EVALUACIÓN DE UN CRONOGRAMA =====================
 def evaluate(sd: dt.date, schedule: list):
@@ -846,13 +846,13 @@ def evaluate(sd: dt.date, schedule: list):
             else:
                 eff_accum_pre2 = eff_accum_pre
         elif a["kind"] == "postR":
-            if eff_accum_pre2 < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2","S3","S4"]) > EPS_REMAIN:
+            if eff_accum_pre2 < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2","S3"]) > EPS_REMAIN:
                 _apply_eval(w, a["eff"], ["S1","S2","S3","S4"])
                 eff_accum_all = _eff_from_to(eff_accum_pre2, a["eff"]/100.0)
             else:
                 eff_accum_all = eff_accum_pre2
         elif a["kind"] == "post_gram":
-            if eff_accum_all < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2","S3"]) > EPS_REMAIN:
+            if eff_accum_all < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2","S3","S4"]) > EPS_REMAIN:
                 _apply_eval(w, a["eff"], ["S1","S2","S3"])
 
     tot_ctrl = S1_pl*c1 + S2_pl*c2 + S3_pl*c3 + S4_pl*c4
