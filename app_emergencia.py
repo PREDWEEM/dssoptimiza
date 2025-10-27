@@ -185,6 +185,20 @@ with st.sidebar:
     MAX_PLANTS_CAP = float(st.selectbox("Tope de densidad efectiva (pl·m²)", [250, 125, 62], index=0))
 st.caption(f"AUC(EMERREL cruda) ≙ A2 **= {int(MAX_PLANTS_CAP)} pl·m²**. Cohortes S1..S4 **SECUENCIALES**.")
 
+
+# ts debe ser la columna de fechas del DataFrame principal
+ts = df_plot["fecha"]
+
+# En lugar de usar "or True", hacemos un condicional explícito:
+sow_ref = st.session_state.get("sow_date_cache", None)
+
+if sow_ref is not None:
+    mask_since_sow = ts.dt.date >= sow_ref
+else:
+    # Si no hay fecha de siembra en caché, inicializamos con todo True
+    mask_since_sow = pd.Series(True, index=ts.index)
+
+
 # ------------------ ESTADOS FENOLÓGICOS SECUENCIALES (S1→S4) ------------------
 ts = pd.to_datetime(df_plot["fecha"])
 mask_since_sow = (ts.dt.date >= st.session_state.get("sow_date_cache", None) or True)  # dummy para inicializar
