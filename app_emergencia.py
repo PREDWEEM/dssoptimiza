@@ -1,4 +1,3 @@
-
 # -*- coding: utf-8 -*-
 # ===============================================================
 # PREDWEEM — Supresión (1−Ciec) + Control (AUC) + Cohortes SECUENCIALES · Optimización
@@ -8,10 +7,8 @@
 # - Preemergente selectivo residual (preemR): [siembra, siembra+10] (S1–S2)
 # - Post-residual (postR): ≥ siembra+20 (S1–S4)
 # - Graminicida post: ventana siembra..siembra+10 (S1–S3)
-# Lógica nueva:
-# - Gateo por remanente (window-aware) + Exclusión jerárquica:
-#   preR → preemR → postR → gram. Cada uno se aplica SOLO si queda remanente
-#   objetivo en su ventana y el acumulado previo es < 99%.
+# NUEVA CONDICIÓN:
+#   → El graminicida post se aplica solo DESPUÉS de finalizar el período residual del postR.
 # ===============================================================
 
 import io, re, math, datetime as dt
@@ -33,7 +30,7 @@ def _loss(x):
 if "opt_running" not in st.session_state: st.session_state.opt_running = False
 if "opt_stop" not in st.session_state:    st.session_state.opt_stop = False
 
-APP_TITLE = "PREDWEEM · (1−Ciec) + AUC + Cohortes SECUENCIALES · Optimización"
+APP_TITLE = "🌾 PREDWEEM · (1−Ciec) + AUC + Cohortes SECUENCIALES · Optimización"
 st.set_page_config(page_title=APP_TITLE, layout="wide", initial_sidebar_state="expanded")
 st.title(APP_TITLE)
 
@@ -42,10 +39,10 @@ NR_DAYS_DEFAULT = 10
 POST_GRAM_FORWARD_DAYS = 11
 PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW  = 14
 PREEM_R_MAX_AFTER_SOW_DAYS        = 10
-EPS_REMAIN = 1e-9        # umbral para gateo por remanente
-EPS_EXCLUDE = 0.99       # 99%: umbral de exclusión jerárquica
+EPS_REMAIN = 1e-9
+EPS_EXCLUDE = 0.99
 
-# ------------------ I/O CSV ------------------
+# ------------------ FUNCIONES AUXILIARES ------------------
 def sniff_sep_dec(text: str):
     sample = text[:8000]
     counts = {sep: sample.count(sep) for sep in [",", ";", "\t"]}
@@ -104,13 +101,12 @@ def cap_cumulative(series, cap, active_mask):
             out[i] = 0.0
     return out
 
-# ------------------ ESCENARIO ------------------
+# ------------------ SECCIÓN CSV ------------------
 with st.sidebar:
     st.header("Escenario de infestación")
     MAX_PLANTS_CAP = float(st.selectbox("Tope de densidad efectiva (pl·m²)", [250, 125, 62], index=0))
-st.caption(f"AUC(EMERREL cruda) ≙ A2 **= {int(MAX_PLANTS_CAP)} pl·m²**. Cohortes S1..S4 **SECUENCIALES**.")
+st.caption(f"AUC(EMERREL cruda) ≙ A2 = {int(MAX_PLANTS_CAP)} pl·m². Cohortes S1..S4 SECUENCIALES.")
 
-# ------------------ CARGA CSV ------------------
 with st.sidebar:
     st.header("Datos de entrada")
     up = st.file_uploader("CSV (fecha, EMERREL diaria o EMERAC)", type=["csv"])
@@ -120,64 +116,39 @@ with st.sidebar:
     dayfirst = st.checkbox("Fecha: dd/mm/yyyy", True)
     is_cumulative = st.checkbox("Mi CSV es acumulado (EMERAC)", False)
     as_percent = st.checkbox("Valores en % (no 0–1)", True)
-    dedup = st.selectbox("Si hay fechas duplicadas…", ["sumar","promediar","primera"], 0)
-    fill_gaps = st.checkbox("Rellenar días faltantes con 0", False)
 
 if up is None and not url:
     st.info("Subí un CSV o pegá una URL para continuar."); st.stop()
 
 try:
     raw = read_raw(up, url)
-    if not raw or len(raw) == 0: st.error("El archivo/URL está vacío."); st.stop()
     df0, meta = parse_csv(raw, sep_opt, dec_opt)
-    if df0.empty: st.error("El CSV no tiene filas."); st.stop()
     st.success(f"CSV leído. sep='{meta['sep']}' dec='{meta['dec']}' enc='{meta['enc']}'")
-except (URLError, HTTPError) as e:
-    st.error(f"No se pudo acceder a la URL: {e}"); st.stop()
 except Exception as e:
     st.error(f"No se pudo leer el CSV: {e}"); st.stop()
 
-# ------------------ PARSEO COLUMNAS ------------------
 cols = list(df0.columns)
-with st.expander("Seleccionar columnas y depurar datos", expanded=True):
-    c_fecha = st.selectbox("Columna de fecha", cols, index=0)
-    c_valor = st.selectbox("Columna de valor (EMERREL diaria o EMERAC)", cols, index=1 if len(cols)>1 else 0)
+c_fecha = st.selectbox("Columna de fecha", cols, index=0)
+c_valor = st.selectbox("Columna de valor", cols, index=1 if len(cols)>1 else 0)
+fechas = pd.to_datetime(df0[c_fecha], dayfirst=dayfirst, errors="coerce")
+vals = clean_numeric_series(df0[c_valor])
+df = pd.DataFrame({"fecha": fechas, "valor": vals}).dropna().sort_values("fecha").reset_index(drop=True)
 
-    fechas = pd.to_datetime(df0[c_fecha], dayfirst=dayfirst, errors="coerce")
-    sample_str = df0[c_valor].astype(str).head(200).str.cat(sep=" ")
-    dec_for_col = "," if (sample_str.count(",")>sample_str.count(".") and re.search(r",\d", sample_str)) else "."
-    vals = clean_numeric_series(df0[c_valor], decimal=dec_for_col)
-
-    df = pd.DataFrame({"fecha": fechas, "valor": vals}).dropna().sort_values("fecha").reset_index(drop=True)
-    if df.empty: st.error("Tras el parseo no quedaron filas válidas."); st.stop()
-
-    if df["fecha"].duplicated().any():
-        if dedup == "sumar":
-            df = df.groupby("fecha").sum(numeric_only=True).rename_axis("fecha").reset_index()
-        elif dedup == "promediar":
-            df = df.groupby("fecha").mean(numeric_only=True).rename_axis("fecha").reset_index()
-        else:
-            df = df.drop_duplicates(subset=["fecha"], keep="first")
-
-    if fill_gaps and len(df) > 1:
-        full_idx = pd.date_range(df["fecha"].min(), df["fecha"].max(), freq="D")
-        df = df.set_index("fecha").reindex(full_idx).rename_axis("fecha").reset_index()
-        df["valor"] = df["valor"].fillna(0.0)
-
-    emerrel = df["valor"].astype(float)
-    if as_percent: emerrel = emerrel / 100.0
-    if is_cumulative: emerrel = emerrel.diff().fillna(0.0).clip(lower=0.0)
-    emerrel = emerrel.clip(lower=0.0)
-    df_plot = pd.DataFrame({"fecha": pd.to_datetime(df["fecha"]), "EMERREL": emerrel})
+emerrel = df["valor"].astype(float)
+if as_percent: emerrel /= 100.0
+if is_cumulative: emerrel = emerrel.diff().fillna(0.0).clip(lower=0.0)
+emerrel = emerrel.clip(lower=0.0)
+df_plot = pd.DataFrame({"fecha": df["fecha"], "EMERREL": emerrel})
 
 # ------------------ SIEMBRA & CANOPIA ------------------
-years = df_plot["fecha"].dt.year.dropna().astype(int)
+years = pd.to_datetime(df_plot["fecha"]).dt.year.dropna().astype(int)
 year_ref = int(years.mode().iloc[0]) if len(years) else dt.date.today().year
-sow_min = dt.date(year_ref, 5, 1); sow_max = dt.date(year_ref, 8, 1)
+sow_min = dt.date(year_ref, 5, 1)
+sow_max = dt.date(year_ref, 8, 1)
 
 with st.sidebar:
     st.header("Siembra & Canopia (para Ciec)")
-    st.caption(f"Ventana de siembra: **{sow_min} → {sow_max}**")
+    st.caption(f"Ventana de siembra: {sow_min} → {sow_max}")
     sow_date = st.date_input("Fecha de siembra", value=sow_min, min_value=sow_min, max_value=sow_max)
     mode_canopy = st.selectbox("Canopia", ["Cobertura dinámica (%)", "LAI dinámico"], index=0)
     t_lag   = st.number_input("Días a emergencia del cultivo (lag)", 0, 60, 7, 1)
@@ -194,15 +165,18 @@ with st.sidebar:
     LAIhc = st.number_input("LAIhc (competitividad material)", 3.0, 6.0, 3.0, 0.1)
 
 if not (sow_min <= sow_date <= sow_max):
-    st.error("La fecha de siembra debe estar entre el 1 de mayo y el 1 de julio."); st.stop()
+    st.error("La fecha de siembra debe estar entre el 1 de mayo y el 1 de agosto."); st.stop()
 
 def compute_canopy(fechas: pd.Series, sow_date: dt.date, mode_canopy: str,
                    t_lag: int, t_close: int, cov_max: float, lai_max: float, k_beer: float):
-    days_since_sow = np.array([(pd.Timestamp(d).date() - sow_date).days for d in fechas], dtype=float)
+    fechas = pd.to_datetime(fechas)
+    days_since_sow = np.array([(d.date() - sow_date).days for d in fechas], dtype=float)
+
     def logistic_between(days, start, end, y_max):
         if end <= start: end = start + 1
         t_mid = 0.5*(start+end); r = 4.0/max(1.0,(end-start))
         return y_max/(1.0+np.exp(-r*(days-t_mid)))
+
     if mode_canopy == "Cobertura dinámica (%)":
         fc_dyn = np.where(days_since_sow < t_lag, 0.0, logistic_between(days_since_sow, t_lag, t_close, cov_max/100.0))
         fc_dyn = np.clip(fc_dyn,0.0,1.0)
@@ -226,81 +200,61 @@ if use_ciec:
 else:
     Ciec = np.zeros_like(LAI, dtype=float)
 
-df_ciec = pd.DataFrame({"fecha": df_plot["fecha"], "Ciec": Ciec})
+df_ciec = pd.DataFrame({"fecha": pd.to_datetime(df_plot["fecha"]), "Ciec": Ciec})
 one_minus_Ciec = np.clip((1.0 - Ciec).astype(float), 0.0, 1.0)
 
 # ------------------ ESTADOS FENOLÓGICOS SECUENCIALES (S1→S4) ------------------
-# Representan fases fenológicas del mismo grupo de individuos (no cohortes).
-# Cada individuo progresa de S1 a S4 con duraciones medias configurables.
-
 ts = pd.to_datetime(df_plot["fecha"])
 mask_since_sow = (ts.dt.date >= sow_date)
 
-# EMERREL diario (0–1)
+# EMERREL diario (0–1) desde siembra
 births = df_plot["EMERREL"].astype(float).clip(lower=0.0).to_numpy()
 births = np.where(mask_since_sow.to_numpy(), births, 0.0)
 
-# Duraciones promedio entre estados (sliders en barra lateral)
+# Duraciones promedio entre estados
 T12 = st.sidebar.number_input("Duración S1→S2 (días)", 1, 60, 10, 1)
 T23 = st.sidebar.number_input("Duración S2→S3 (días)", 1, 60, 15, 1)
 T34 = st.sidebar.number_input("Duración S3→S4 (días)", 1, 60, 20, 1)
+globals()["T12"] = int(T12); globals()["T23"] = int(T23); globals()["T34"] = int(T34)
 
-# Hacerlas globales para el optimizador (recompute_for_sow y recompute_apply_best)
-globals()["T12"] = int(T12)
-globals()["T23"] = int(T23)
-globals()["T34"] = int(T34)
+# Compartimentos
+S1 = births.copy(); S2 = np.zeros_like(births); S3 = np.zeros_like(births); S4 = np.zeros_like(births)
 
-# Inicialización de compartimentos
-S1 = births.copy()         # nuevos emergidos
-S2 = np.zeros_like(births) # en desarrollo
-S3 = np.zeros_like(births) # vegetativos
-S4 = np.zeros_like(births) # adultos
-
-# Simulación compartimental (flujo entre estados)
+# Flujo entre estados (secuencial)
 for i in range(len(births)):
-    # S1 → S2
     if i - int(T12) >= 0:
         moved = births[i - int(T12)]
         S1[i - int(T12)] -= moved
         S2[i] += moved
-    # S2 → S3
     if i - (int(T12) + int(T23)) >= 0:
-        moved = births[i - (int(T12) + int(T23))]
-        S2[i - (int(T12) + int(T23))] -= moved
+        moved = births[i - (int(T12)+int(T23))]
+        S2[i - (int(T12)+int(T23))] -= moved
         S3[i] += moved
-    # S3 → S4
     if i - (int(T12) + int(T23) + int(T34)) >= 0:
-        moved = births[i - (int(T12) + int(T23) + int(T34))]
-        S3[i - (int(T12) + int(T23) + int(T34))] -= moved
+        moved = births[i - (int(T12)+int(T23)+int(T34))]
+        S3[i - (int(T12)+int(T23)+int(T34))] -= moved
         S4[i] += moved
 
-# Evitar valores negativos por redondeo numérico
-S1 = np.clip(S1, 0.0, None)
-S2 = np.clip(S2, 0.0, None)
-S3 = np.clip(S3, 0.0, None)
-S4 = np.clip(S4, 0.0, None)
+S1 = np.clip(S1, 0.0, None); S2 = np.clip(S2, 0.0, None); S3 = np.clip(S3, 0.0, None); S4 = np.clip(S4, 0.0, None)
 
-# Escalado para asegurar que la suma de estados ≤ EMEAC
+# Normalización a EMERAC
 total_states = S1 + S2 + S3 + S4
 emeac = np.cumsum(births)
 scale = np.divide(np.clip(emeac, 1e-9, None), np.clip(total_states, 1e-9, None))
 scale = np.minimum(scale, 1.0)
 S1 *= scale; S2 *= scale; S3 *= scale; S4 *= scale
 
-# Coeficientes relativos de aporte por estado (efecto competitivo / sombreo)
+# Aportes relativos (competencia/sombreo)
 FC_S = {"S1": 0.1, "S2": 0.3, "S3": 0.6, "S4": 1.0}
-
-# Arrays finales (compatibles con el resto del flujo)
-S1_arr = S1; S2_arr = S2; S3_arr = S3; S4_arr = S4
 
 # ------------------ ESCALADO A PLANTAS ------------------
 auc_cruda = auc_time(ts, df_plot["EMERREL"].to_numpy(float), mask=mask_since_sow)
 if auc_cruda > 0:
     factor_area_to_plants = MAX_PLANTS_CAP / auc_cruda
-    conv_caption = f"AUC(EMERREL cruda desde siembra) = {auc_cruda:.4f} → {int(MAX_PLANTS_CAP)} pl·m² (factor={factor_area_to_plants:.4f})"
+    conv_caption = f"AUC(EMERREL desde siembra) = {auc_cruda:.4f} ⇒ {int(MAX_PLANTS_CAP)} pl·m² (factor={factor_area_to_plants:.4f})"
 else:
     factor_area_to_plants = None
-    conv_caption = "No se pudo escalar por área (AUC de EMERREL cruda = 0)."
+    conv_caption = "No se pudo escalar por área (AUC de EMERREL = 0)."
 
 # ------------------ MANEJO (UI MANUAL) ------------------
 sched_rows = []
@@ -321,7 +275,7 @@ with st.sidebar:
     pre_selNR_date = st.date_input("Fecha selectivo no residual (pre)", value=min_date, min_value=min_date, max_value=max_date, disabled=not pre_selNR)
 
     preR = st.checkbox("Selectivo + residual (presiembra)", value=False,
-                       help="Solo permitido hasta siembra−14 días. Actúa S1–S2.")
+                       help="Solo permitido hasta siembra−14. Actúa S1–S2.")
     preR_days = st.slider("Residualidad presiembra (días)", 15, 120, 14, 1, disabled=not preR)
     preR_max = (sow_date - timedelta(days=PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW))
     preR_date = st.date_input("Fecha selectivo + residual (presiembra)",
@@ -342,43 +296,42 @@ with st.sidebar:
 
 with st.sidebar:
     st.header("Manejo post-emergencia (manual)")
-    post_gram = st.checkbox("Selectivo graminicida (post)", value=False)
-    post_gram_date = st.date_input("Fecha graminicida (post)", value=max(min_date, sow_date), min_value=min_date, max_value=max_date, disabled=not post_gram)
-
     post_selR = st.checkbox("Selectivo + residual (post)", value=False,
-                            help="Regla: ≥ siembra + 20 días. Actúa S1–S4.")
+                            help="Regla: ≥ siembra + 20 días. Actúa S1–S3.")
     post_min_postR = max(min_date, sow_date + timedelta(days=20))
     post_selR_date = st.date_input("Fecha selectivo + residual (post)", value=post_min_postR, min_value=post_min_postR, max_value=max_date, disabled=not post_selR)
     post_res_dias = st.slider("Residualidad post (días)", 30, 120, 45, 1, disabled=not post_selR)
 
-# Validaciones
+    post_gram = st.checkbox("Selectivo graminicida (post)", value=False,
+                            help="Solo se aplicará DESPUÉS de finalizado el periodo residual del postR.")
+    post_gram_date = st.date_input("Fecha graminicida (post)", value=max(min_date, sow_date), min_value=min_date, max_value=max_date, disabled=not post_gram)
+
+# Validaciones de calendario
 warnings = []
 def check_pre(date_val, name):
     if date_val and date_val > sow_date: warnings.append(f"{name}: debería ser ≤ siembra ({sow_date}).")
 def check_post(date_val, name):
     if date_val and date_val < sow_date: warnings.append(f"{name}: debería ser ≥ siembra ({sow_date}).")
+
 if pre_glifo:  check_pre(pre_glifo_date, "Glifosato (pre)")
 if pre_selNR:  check_pre(pre_selNR_date, "Selectivo no residual (pre)")
 if preR and preR_date > (sow_date - timedelta(days=PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW)):
     warnings.append(f"Presiembra residual debe ser ≤ siembra−{PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW} ({sow_date - timedelta(days=PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW)}).")
 if preemR and (preemR_date < sow_date or preemR_date > sow_date + timedelta(days=PREEM_R_MAX_AFTER_SOW_DAYS)):
     warnings.append(f"Preemergente residual debe estar entre siembra y siembra+{PREEM_R_MAX_AFTER_SOW_DAYS}.")
-if post_gram:  check_post(post_gram_date, "Graminicida (post)")
 if post_selR and post_selR_date and post_selR_date < sow_date + timedelta(days=20):
     warnings.append(f"Selectivo + residual (post): debe ser ≥ {sow_date + timedelta(days=20)}.")
-for w in warnings: st.warning(w)
 
-# cronograma legible en UI
+# Mostrar cronograma legible
 if pre_glifo: add_sched("Pre · glifosato (NSr, 1d)", pre_glifo_date, None, "Barbecho")
 if pre_selNR: add_sched("Pre · selectivo no residual (NR)", pre_selNR_date, NR_DAYS_DEFAULT, f"NR {NR_DAYS_DEFAULT}d")
 if preR:      add_sched("Pre-SIEMBRA · selectivo + residual", preR_date, preR_days, f"Protege {preR_days}d (S1–S2)")
 if preemR:    add_sched("PREEMERGENTE · selectivo + residual", preemR_date, preemR_days, f"Protege {preemR_days}d (S1–S2)")
+if post_selR: add_sched("Post · selectivo + residual", post_selR_date, post_res_dias, f"Protege {post_res_dias}d (S1–S3)")
 if post_gram:
     ini = pd.to_datetime(post_gram_date).date()
     fin = (pd.to_datetime(post_gram_date) + pd.Timedelta(days=POST_GRAM_FORWARD_DAYS)).date()
     sched_rows.append({"Intervención": "Post · graminicida (NR, +10d)", "Inicio": str(ini), "Fin": str(fin), "Nota": "Ventana día de app + 10 días"})
-if post_selR: add_sched("Post · selectivo + residual", post_selR_date, post_res_dias, f"Protege {post_res_dias}d")
-
 sched = pd.DataFrame(sched_rows)
 
 # ------------------ EFICIENCIAS ------------------
@@ -388,8 +341,8 @@ with st.sidebar:
     ef_pre_selNR   = st.slider(f"Selectivo no residual (pre, {NR_DAYS_DEFAULT}d)", 0, 100, 60, 1) if pre_selNR else 0
     ef_preR        = st.slider("Selectivo + residual (presiembra)", 0, 100, 90, 1) if preR else 0
     ef_preemR      = st.slider("Selectivo + residual (preemergente)", 0, 100, 90, 1) if preemR else 0
-    ef_post_gram   = st.slider(f"Graminicida (post, +10d)", 0, 100, 90, 1) if post_gram else 0
     ef_post_selR   = st.slider("Selectivo + residual (post)", 0, 100, 90, 1) if post_selR else 0
+    ef_post_gram   = st.slider(f"Graminicida (post, +10d)", 0, 100, 90, 1) if post_gram else 0
 
 # ------------------ Decaimiento opcional ------------------
 with st.sidebar:
@@ -427,14 +380,16 @@ def weights_residual(start_date, dias):
 # ------------------ APORTES por estado ------------------
 if factor_area_to_plants is not None:
     ms = mask_since_sow.to_numpy()
-    S1_pl = np.where(ms, S1_arr * one_minus_Ciec * FC_S["S1"] * factor_area_to_plants, 0.0)
-    S2_pl = np.where(ms, S2_arr * one_minus_Ciec * FC_S["S2"] * factor_area_to_plants, 0.0)
-    S3_pl = np.where(ms, S3_arr * one_minus_Ciec * FC_S["S3"] * factor_area_to_plants, 0.0)
-    S4_pl = np.where(ms, S4_arr * one_minus_Ciec * FC_S["S4"] * factor_area_to_plants, 0.0)
+    S1_pl = np.where(ms, S1 * one_minus_Ciec * FC_S["S1"] * factor_area_to_plants, 0.0)
+    S2_pl = np.where(ms, S2 * one_minus_Ciec * FC_S["S2"] * factor_area_to_plants, 0.0)
+    S3_pl = np.where(ms, S3 * one_minus_Ciec * FC_S["S3"] * factor_area_to_plants, 0.0)
+    S4_pl = np.where(ms, S4 * one_minus_Ciec * FC_S["S4"] * factor_area_to_plants, 0.0)
 
     # controles (inicialmente 1.0)
-    ctrl_S1 = np.ones_like(fechas_d, float); ctrl_S2 = np.ones_like(fechas_d, float)
-    ctrl_S3 = np.ones_like(fechas_d, float); ctrl_S4 = np.ones_like(fechas_d, float)
+    ctrl_S1 = np.ones_like(fechas_d, float)
+    ctrl_S2 = np.ones_like(fechas_d, float)
+    ctrl_S3 = np.ones_like(fechas_d, float)
+    ctrl_S4 = np.ones_like(fechas_d, float)
 
     def apply_efficiency_per_state(weights, eff_pct, states_sel):
         if eff_pct <= 0 or (not states_sel): return
@@ -444,7 +399,7 @@ if factor_area_to_plants is not None:
         if "S3" in states_sel: np.multiply(ctrl_S3, reduc, out=ctrl_S3)
         if "S4" in states_sel: np.multiply(ctrl_S4, reduc, out=ctrl_S4)
 
-    # ---------- Gateo por remanente + Exclusión jerárquica ----------
+    # ---------- Gateo por remanente + Exclusión jerárquica + NUEVA CONDICIÓN ----------
     def _remaining_in_window(weights, states_sel, c1, c2, c3, c4):
         w = np.clip(weights, 0.0, 1.0)
         rem = 0.0
@@ -456,7 +411,6 @@ if factor_area_to_plants is not None:
         return float(rem)
 
     def _eff_from_to(prev_eff, this_eff):
-        # combinar por independencia: 1 - (1 - prev)*(1 - this)
         return 1.0 - (1.0 - prev_eff) * (1.0 - this_eff)
 
     # Acumuladores de eficacia jerárquica
@@ -473,7 +427,7 @@ if factor_area_to_plants is not None:
             preR_applied = True
             eff_accum_pre = _eff_from_to(0.0, ef_preR/100.0)
 
-    # 2) Preemergente (S1–S2) — solo si acumulado previo < 99% y hay remanente en su ventana
+    # 2) Preemergente (S1–S2) — solo si acumulado previo < 99% y hay remanente
     preemR_applied = False
     if preemR and (eff_accum_pre < EPS_EXCLUDE):
         w_preem = weights_residual(preemR_date, preemR_days)
@@ -486,7 +440,7 @@ if factor_area_to_plants is not None:
     else:
         eff_accum_pre2 = eff_accum_pre
 
-    # 3) Pre no residual (NR) y Glifo pre (NR) — actúan independientemente (no alteran jerarquía de residuales, pero sí la masa)
+    # 3) Pre no residual (NR) y Glifo pre (NR) — independientes
     if pre_selNR:
         w = weights_residual(pre_selNR_date, NR_DAYS_DEFAULT)
         if _remaining_in_window(w, ["S1","S2","S3","S4"], ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4) > EPS_REMAIN and ef_pre_selNR > 0:
@@ -496,7 +450,7 @@ if factor_area_to_plants is not None:
         if _remaining_in_window(w, ["S1","S2","S3","S4"], ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4) > EPS_REMAIN and ef_pre_glifo > 0:
             apply_efficiency_per_state(w, ef_pre_glifo, ["S1","S2","S3","S4"])
 
-    # 4) Post residual (S1–S4) — solo si acumulado previo < 99% y hay remanente
+    # 4) Post residual (S1–S3) — solo si acumulado previo < 99% y hay remanente
     postR_applied = False
     if post_selR and (eff_accum_pre2 < EPS_EXCLUDE):
         w_postR = weights_residual(post_selR_date, post_res_dias)
@@ -509,11 +463,18 @@ if factor_area_to_plants is not None:
     else:
         eff_accum_all = eff_accum_pre2
 
-    # 5) Graminicida post (S1–S3) — solo si acumulado previo < 99% y hay remanente
-    if post_gram and (eff_accum_all < EPS_EXCLUDE):
-        w_gram = weights_residual(post_gram_date, POST_GRAM_FORWARD_DAYS)
-        if _remaining_in_window(w_gram, ["S1","S2","S3","S4"], ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4) > EPS_REMAIN and ef_post_gram > 0:
-            apply_efficiency_per_state(w_gram, ef_post_gram, ["S1","S2","S3","S4"])
+    # 5) Graminicida post (S1–S3) — ✅ SOLO después de finalizar el periodo residual del postR
+    if post_gram and (eff_accum_all < EPS_EXCLUDE) and ef_post_gram > 0:
+        allow_after_postR = True
+        if post_selR:
+            fin_postR = (pd.to_datetime(post_selR_date) + pd.Timedelta(days=int(post_res_dias))).date()
+            allow_after_postR = pd.to_datetime(post_gram_date).date() >= fin_postR
+            if not allow_after_postR:
+                st.warning(f"Graminicida post ({post_gram_date}) inválido: debe ser ≥ fin postR ({fin_postR}). No se aplicará.")
+        if allow_after_postR:
+            w_gram = weights_residual(post_gram_date, POST_GRAM_FORWARD_DAYS)
+            if _remaining_in_window(w_gram, ["S1","S2","S3"], ctrl_S1, ctrl_S2, ctrl_S3, ctrl_S4) > EPS_REMAIN:
+                apply_efficiency_per_state(w_gram, ef_post_gram, ["S1","S2","S3"])
 
     # Series con control aplicado
     S1_pl_ctrl = S1_pl * ctrl_S1
@@ -525,6 +486,7 @@ if factor_area_to_plants is not None:
     plantas_supresion_ctrl = (S1_pl_ctrl + S2_pl_ctrl + S3_pl_ctrl + S4_pl_ctrl)
 else:
     S1_pl=S2_pl=S3_pl=S4_pl=S1_pl_ctrl=S2_pl_ctrl=S3_pl_ctrl=S4_pl_ctrl=plantas_supresion=plantas_supresion_ctrl=np.full(len(ts), np.nan)
+
 
 # ------------------ CAP A2 & REESCALADO ------------------
 if factor_area_to_plants is not None:
@@ -611,19 +573,14 @@ st.markdown(
 **A2 (ctrl, cap):** **{A2_ctrl_final if np.isfinite(A2_ctrl_final) else float('nan'):.1f}** pl·m²
 """
 )
+
 # =====================================================
 # BLOQUE FINAL — Optimización (residualidades separadas) + Mejor escenario (gráficos)
 # =====================================================
-
-# ---------- utilidades que ya deben existir más arriba ----------
-# Requiere en el script: ts (DatetimeIndex/Series de fechas), df_plot["EMERREL"],
-# compute_canopy(...), use_ciec, Ca, Cs, LAIhc, mode_canopy, t_lag, t_close, cov_max, lai_max, k_beer,
-# MAX_PLANTS_CAP, POST_GRAM_FORWARD_DAYS, EPS_REMAIN, EPS_EXCLUDE, _loss(x), auc_time(...), cap_cumulative(...)
-
 st.markdown("---")
 st.header("🧠 Optimización")
 
-# ===================== PARAMS Y CONTROLES (sidebar) =====================
+# ---------- Controles de optimización ----------
 with st.sidebar:
     st.header("Optimización (variables habilitadas)")
     sow_search_from = st.date_input("Buscar siembra desde", value=sow_min, min_value=sow_min, max_value=sow_max, key="sow_from")
@@ -632,8 +589,8 @@ with st.sidebar:
 
     use_preR_opt      = st.checkbox("Incluir presiembra + residual (≤ siembra−14; S1–S2)", value=True)
     use_preemR_opt    = st.checkbox("Incluir preemergente + residual (siembra..siembra+10; S1–S2)", value=True)
-    use_post_selR_opt = st.checkbox("Incluir post + residual (≥ siembra + 20; S1–S4)", value=True)
-    use_post_gram_opt = st.checkbox(f"Incluir graminicida post (+{POST_GRAM_FORWARD_DAYS-1}d; S1–S3)", value=True)
+    use_post_selR_opt = st.checkbox("Incluir post + residual (≥ siembra + 20; S1–S3)", value=True)
+    use_post_gram_opt = st.checkbox(f"Incluir graminicida post (+{POST_GRAM_FORWARD_DAYS-1}d; S1–S3, solo tras postR)", value=True)
 
     ef_preR_opt      = st.slider("Eficiencia presiembraR (%)", 0, 100, 90, 1)   if use_preR_opt else 0
     ef_preemR_opt    = st.slider("Eficiencia preemergenteR (%)", 0, 100, 90, 1) if use_preemR_opt else 0
@@ -675,11 +632,11 @@ with st.sidebar:
     if stop_clicked:
         st.session_state.opt_stop = True
 
-# ===================== VALIDACIONES =====================
+# ---------- Validación ----------
 if sow_search_from > sow_search_to:
     st.error("Rango de siembra inválido (desde > hasta)."); st.stop()
 
-# ===================== FUNCIONES DE SOPORTE =====================
+# ---------- Helpers ----------
 def _make_residual_list(rmin, rmax, rstep):
     L = list(range(int(rmin), int(rmax)+1, int(rstep)))
     if int(rmax) not in L: L.append(int(rmax))
@@ -718,12 +675,8 @@ def post_dates(sd):
     while cur <= end: out.append(cur); cur = cur + pd.Timedelta(days=int(post_step_days))
     return out
 
-# ===================== 1−Ciec PARA UNA SIEMBRA =====================
+# ---------- (1−Ciec) para siembra dada ----------
 def compute_ciec_for(sow_d: dt.date):
-    """
-    Devuelve (1−Ciec) para cada fecha ts dado un sow_d, usando los parámetros
-    ya definidos en la UI (mode_canopy, t_lag, t_close, cov_max, lai_max, k_beer, use_ciec, Ca, Cs, LAIhc).
-    """
     FCx, LAIx = compute_canopy(ts, sow_d, mode_canopy, int(t_lag), int(t_close),
                                float(cov_max), float(lai_max), float(k_beer))
     if use_ciec:
@@ -734,13 +687,12 @@ def compute_ciec_for(sow_d: dt.date):
         Ciec_loc = np.zeros_like(LAIx, float)
     return np.clip(1.0 - Ciec_loc, 0.0, 1.0)
 
-# ===================== RECOMPUTE PARA UNA SIEMBRA =====================
+# ---------- Recompute para siembra ----------
 def recompute_for_sow(sow_d: dt.date, T12: int, T23: int, T34: int):
     mask_since = (ts.dt.date >= sow_d)
     births = np.where(mask_since.to_numpy(), df_plot["EMERREL"].to_numpy(float), 0.0)
     one_minus = compute_ciec_for(sow_d)
 
-    # Estados S1→S4 (secuenciales)
     S1 = births.copy(); S2 = np.zeros_like(births); S3 = np.zeros_like(births); S4 = np.zeros_like(births)
     for i in range(len(births)):
         if i - int(T12) >= 0:
@@ -756,12 +708,10 @@ def recompute_for_sow(sow_d: dt.date, T12: int, T23: int, T34: int):
     scale = np.divide(np.clip(emeac, 1e-9, None), np.clip(total_states, 1e-9, None))
     scale = np.minimum(scale, 1.0); S1*=scale; S2*=scale; S3*=scale; S4*=scale
 
-    # Escalado por AUC
     auc_cruda_loc = auc_time(ts, df_plot["EMERREL"].to_numpy(float), mask=mask_since)
     if auc_cruda_loc <= 0: return None
     factor_area = MAX_PLANTS_CAP / auc_cruda_loc
 
-    # Aportes por estado ponderados por (1−Ciec) y FC_S (definidos arriba en tu script)
     S1_pl = np.where(mask_since, S1 * one_minus * 0.1 * factor_area, 0.0)
     S2_pl = np.where(mask_since, S2 * one_minus * 0.3 * factor_area, 0.0)
     S3_pl = np.where(mask_since, S3 * one_minus * 0.6 * factor_area, 0.0)
@@ -781,18 +731,18 @@ def recompute_for_sow(sow_d: dt.date, T12: int, T23: int, T34: int):
         "fechas_d": ts.dt.date.values
     }
 
-# ===================== ACCIONES (con reglas) =====================
+# ---------- Acciones con reglas ----------
 def act_presiembraR(date_val, R, eff): return {"kind":"preR",   "date": pd.to_datetime(date_val).date(), "days": int(R), "eff": eff, "states": ["S1","S2"]}
 def act_preemR(date_val, R, eff):     return {"kind":"preemR",  "date": pd.to_datetime(date_val).date(), "days": int(R), "eff": eff, "states": ["S1","S2"]}
 def act_post_selR(date_val, R, eff):  return {"kind":"postR",   "date": pd.to_datetime(date_val).date(), "days": int(R), "eff": eff, "states": ["S1","S2","S3"]}
-def act_post_gram(date_val, eff):     return {"kind":"post_gram","date": pd.to_datetime(date_val).date(), "days": POST_GRAM_FORWARD_DAYS, "eff": eff, "states": ["S1","S2","S3","S4"]}
+def act_post_gram(date_val, eff):     return {"kind":"post_gram","date": pd.to_datetime(date_val).date(), "days": POST_GRAM_FORWARD_DAYS, "eff": eff, "states": ["S1","S2","S3"]}
 
-# ===================== EVALUACIÓN DE UN CRONOGRAMA =====================
+# ---------- Evaluar cronograma ----------
 def evaluate(sd: dt.date, schedule: list):
     sow = pd.to_datetime(sd)
     sow_plus_20 = sow + pd.Timedelta(days=20)
 
-    # Reglas duras de fechas
+    # Reglas duras de calendario
     for a in schedule:
         d = pd.to_datetime(a["date"])
         if a["kind"] == "postR"  and d < sow_plus_20: return None
@@ -805,7 +755,7 @@ def evaluate(sd: dt.date, schedule: list):
     S1_pl, S2_pl, S3_pl, S4_pl = env["S_pl"]; sup_cap = env["sup_cap"]
     ts_local, fechas_d_local = env["ts"], env["fechas_d"]
 
-    # Controles (1 = sin control, se reduce multiplicando)
+    # Controles (1 = sin control)
     c1 = np.ones_like(fechas_d_local, float)
     c2 = np.ones_like(fechas_d_local, float)
     c3 = np.ones_like(fechas_d_local, float)
@@ -835,24 +785,38 @@ def evaluate(sd: dt.date, schedule: list):
     for a in sorted(schedule, key=lambda a: order.get(a["kind"], 9)):
         d0, d1 = a["date"], a["date"] + pd.Timedelta(days=int(a["days"]))
         w = ((fechas_d_local >= d0) & (fechas_d_local < d1)).astype(float)
+
         if a["kind"] == "preR":
             if _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN and a["eff"] > 0:
                 _apply_eval(w, a["eff"], ["S1","S2"])
                 eff_accum_pre = _eff_from_to(0.0, a["eff"]/100.0)
+
         elif a["kind"] == "preemR":
             if eff_accum_pre < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN:
                 _apply_eval(w, a["eff"], ["S1","S2"])
                 eff_accum_pre2 = _eff_from_to(eff_accum_pre, a["eff"]/100.0)
             else:
                 eff_accum_pre2 = eff_accum_pre
+
         elif a["kind"] == "postR":
+            # PostR actúa sobre S1–S3
             if eff_accum_pre2 < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2","S3"]) > EPS_REMAIN:
-                _apply_eval(w, a["eff"], ["S1","S2","S3","S4"])
+                _apply_eval(w, a["eff"], ["S1","S2","S3"])
                 eff_accum_all = _eff_from_to(eff_accum_pre2, a["eff"]/100.0)
             else:
                 eff_accum_all = eff_accum_pre2
+
         elif a["kind"] == "post_gram":
-            if eff_accum_all < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2","S3","S4"]) > EPS_REMAIN:
+            # ✅ Graminicida SOLO después de finalizar el periodo residual del postR
+            postR_actions = [x for x in schedule if x["kind"] == "postR"]
+            allow_after_postR = True
+            if postR_actions:
+                last_postR = max(postR_actions, key=lambda x: x["date"])
+                fin_postR = last_postR["date"] + pd.Timedelta(days=int(last_postR["days"]))
+                allow_after_postR = pd.to_datetime(a["date"]) >= fin_postR
+
+            if allow_after_postR and eff_accum_all < EPS_EXCLUDE and a["eff"] > 0 \
+               and _remaining_in_window_eval(w, ["S1","S2","S3"]) > EPS_REMAIN:
                 _apply_eval(w, a["eff"], ["S1","S2","S3"])
 
     tot_ctrl = S1_pl*c1 + S2_pl*c2 + S3_pl*c3 + S4_pl*c4
@@ -873,7 +837,7 @@ def evaluate(sd: dt.date, schedule: list):
     return {"sow": sd, "loss_pct": float(loss3), "x2": X2loc, "x3": X3loc,
             "A2_sup": A2_sup, "A2_ctrl": A2_ctrl, "schedule": schedule}
 
-# ===================== CONSTRUCCIÓN DE ESCENARIOS =====================
+# ---------- Generación de escenarios ----------
 def build_all_scenarios():
     scenarios = []
     for sd in sow_candidates:
@@ -911,7 +875,7 @@ def sample_random_scenario():
         if cand: schedule.append(act_post_gram(random.choice(cand), ef_post_gram_opt))
     return (pd.to_datetime(sd).date(), schedule)
 
-# ===================== EJECUCIÓN DEL OPTIMIZADOR =====================
+# ---------- Ejecución del optimizador ----------
 status_ph = st.empty()
 prog_ph = st.empty()
 results = []
@@ -984,7 +948,7 @@ else:
     else:
         status_ph.info("Listo para optimizar. Ajustá parámetros y presioná **Iniciar**.")
 
-# ===================== REPORTE Y GRÁFICOS DEL MEJOR ESCENARIO =====================
+# ---------- Reporte del mejor escenario ----------
 if results:
     results_sorted = sorted(results, key=lambda r: (r["loss_pct"], r["x3"]))
     best = results_sorted[0]
@@ -997,7 +961,6 @@ if results:
         f"**A2_sup:** {best['A2_sup']:.1f} · **A2_ctrl:** {best['A2_ctrl']:.1f} pl·m²"
     )
 
-    # Tabla y descarga del cronograma
     def schedule_df(sch):
         rows=[]
         for a in sch:
@@ -1020,7 +983,7 @@ if results:
         ts_b = envb["ts"]; fechas_d_b = envb["fechas_d"]; mask_since_b = envb["mask_since"]
         S1p, S2p, S3p, S4p = envb["S_pl"]; sup_cap_b = envb["sup_cap"]
 
-        # Reaplicar agenda (con jerarquía y gateo)
+        # Reaplicar agenda (con jerarquía y regla nueva del graminicida)
         c1 = np.ones_like(fechas_d_b, float); c2 = np.ones_like(fechas_d_b, float)
         c3 = np.ones_like(fechas_d_b, float); c4 = np.ones_like(fechas_d_b, float)
 
@@ -1049,24 +1012,36 @@ if results:
             ini = pd.to_datetime(a["date"]).date()
             fin = (pd.to_datetime(a["date"]) + pd.Timedelta(days=int(a["days"]))).date()
             w = ((fechas_d_b >= ini) & (fechas_d_b < fin)).astype(float)
+
             if a["kind"] == "preR":
                 if _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN and a["eff"] > 0:
                     _apply_eval(w, a["eff"], ["S1","S2"])
                     eff_accum_pre = _eff_from_to(0.0, a["eff"]/100.0)
+
             elif a["kind"] == "preemR":
                 if eff_accum_pre < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN:
                     _apply_eval(w, a["eff"], ["S1","S2"])
                     eff_accum_pre2 = _eff_from_to(eff_accum_pre, a["eff"]/100.0)
                 else:
                     eff_accum_pre2 = eff_accum_pre
+
             elif a["kind"] == "postR":
-                if eff_accum_pre2 < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2","S3","S4"]) > EPS_REMAIN:
-                    _apply_eval(w, a["eff"], ["S1","S2","S3","S4"])
+                if eff_accum_pre2 < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2","S3"]) > EPS_REMAIN:
+                    _apply_eval(w, a["eff"], ["S1","S2","S3"])
                     eff_accum_all = _eff_from_to(eff_accum_pre2, a["eff"]/100.0)
                 else:
                     eff_accum_all = eff_accum_pre2
+
             elif a["kind"] == "post_gram":
-                if eff_accum_all < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2","S3"]) > EPS_REMAIN:
+                postR_actions = [x for x in best["schedule"] if x["kind"] == "postR"]
+                allow_after_postR = True
+                if postR_actions:
+                    last_postR = max(postR_actions, key=lambda x: x["date"])
+                    fin_postR = last_postR["date"] + pd.Timedelta(days=int(last_postR["days"]))
+                    allow_after_postR = pd.to_datetime(a["date"]) >= fin_postR
+
+                if allow_after_postR and eff_accum_all < EPS_EXCLUDE and a["eff"] > 0 \
+                   and _remaining_in_window_eval(w, ["S1","S2","S3"]) > EPS_REMAIN:
                     _apply_eval(w, a["eff"], ["S1","S2","S3"])
 
         total_ctrl_daily = (S1p*c1 + S2p*c2 + S3p*c3 + S4p*c4)
@@ -1131,6 +1106,14 @@ if results:
         st.plotly_chart(fig_states, use_container_width=True)
 else:
     st.info("Aún no hay resultados de optimización para mostrar.")
+
+
+
+
+
+
+
+
 
 
 
