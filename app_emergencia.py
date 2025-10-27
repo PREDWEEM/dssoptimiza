@@ -555,35 +555,91 @@ st.markdown(
 """
 )
 
+
 # ===============================================================
-# 🌾 OPTIMIZADOR + MEJOR ESCENARIO (compatible con solapamiento)
-# ===============================================================
-
-status_ph = st.empty()
-prog_ph = st.empty()
-results = []
-
-# Verificación de datos base
-if factor_area_to_plants is None or not np.isfinite(auc_cruda):
-    st.info("Necesitás AUC(EMERREL cruda) > 0 para optimizar.")
-else:
-    if st.session_state.opt_running:
-        status_ph.info("Optimizando…")
-        # ---------------------------------------------
-        # 🧩 MODO GRID COMBINATORIO
-        # ---------------------------------------------
-        optimizer = st.session_state.get("optimizer", "Grid (combinatorio)")
-
-
-
-
-
-        # ===============================================================
-# 🔧 FUNCIONES BASE PARA GENERAR ESCENARIOS (sin restricciones)
+# 🌾 OPTIMIZADOR COMPLETO — SIN RESTRICCIÓN DE SOLAPAMIENTO
 # ===============================================================
 
+# ---------------- EVALUACIÓN DE ESCENARIOS ----------------
+def evaluate(sd: dt.date, schedule: list):
+    """Evalúa un cronograma de controles (permite solapamientos)."""
+    sow = pd.to_datetime(sd)
+    sow_plus_20 = sow + pd.Timedelta(days=20)
+
+    # Filtrar acciones fuera de rango
+    valid_actions = []
+    for a in schedule:
+        d = pd.to_datetime(a["date"])
+        if a["kind"] == "postR" and d < sow_plus_20:
+            continue
+        if a["kind"] == "preR" and d > (sow - pd.Timedelta(days=PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW)):
+            continue
+        if a["kind"] == "preemR" and (d < sow or d > (sow + pd.Timedelta(days=PREEM_R_MAX_AFTER_SOW_DAYS))):
+            continue
+        valid_actions.append(a)
+
+    if not valid_actions:
+        return None
+
+    env = recompute_for_sow(sd, int(T12), int(T23), int(T34))
+    if env is None:
+        return None
+
+    mask_since = env["mask_since"]
+    S1_pl, S2_pl, S3_pl, S4_pl = env["S_pl"]
+    sup_cap = env["sup_cap"]
+    ts_local = env["ts"]
+    fechas_d_local = env["fechas_d"]
+
+    # Factores multiplicativos por estado
+    c1 = np.ones_like(fechas_d_local, float)
+    c2 = np.ones_like(fechas_d_local, float)
+    c3 = np.ones_like(fechas_d_local, float)
+    c4 = np.ones_like(fechas_d_local, float)
+
+    def _apply_ctrl(w, eff, states):
+        reduc = np.clip(1.0 - (eff / 100.0) * w, 0.0, 1.0)
+        if "S1" in states: np.multiply(c1, reduc, out=c1)
+        if "S2" in states: np.multiply(c2, reduc, out=c2)
+        if "S3" in states: np.multiply(c3, reduc, out=c3)
+        if "S4" in states: np.multiply(c4, reduc, out=c4)
+
+    # Jerarquía: preR → preemR → postR → post_gram
+    order = {"preR": 0, "preemR": 1, "postR": 2, "post_gram": 3}
+    valid_actions.sort(key=lambda x: (order.get(x["kind"], 9), x["date"]))
+
+    for a in valid_actions:
+        d0 = a["date"]
+        d1 = a["date"] + dt.timedelta(days=int(a["days"]))
+        w = ((fechas_d_local >= d0) & (fechas_d_local < d1)).astype(float)
+        if np.any(w):
+            _apply_ctrl(w, a["eff"], a["states"])
+
+    tot_ctrl = S1_pl * c1 + S2_pl * c2 + S3_pl * c3 + S4_pl * c4
+    plantas_ctrl_cap = np.minimum(tot_ctrl, sup_cap)
+
+    X2loc = float(np.nansum(sup_cap[mask_since]))
+    X3loc = float(np.nansum(plantas_ctrl_cap[mask_since]))
+    loss3 = _loss(X3loc)
+
+    auc_sup  = auc_time(ts_local, sup_cap, mask=mask_since)
+    auc_ctrl = auc_time(ts_local, plantas_ctrl_cap, mask=mask_since)
+    A2_sup  = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP * (auc_sup  / env["auc_cruda"]))
+    A2_ctrl = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP * (auc_ctrl / env["auc_cruda"]))
+
+    return {
+        "sow": sd,
+        "loss_pct": loss3,
+        "x2": X2loc,
+        "x3": X3loc,
+        "A2_sup": A2_sup,
+        "A2_ctrl": A2_ctrl,
+        "schedule": valid_actions,
+    }
+
+# ---------------- CONSTRUCCIÓN DE ESCENARIOS ----------------
 def build_all_scenarios():
-    """Genera todas las combinaciones posibles de escenarios."""
+    """Genera todas las combinaciones de escenarios."""
     scenarios = []
     for sd in sow_candidates:
         grp = []
@@ -654,6 +710,17 @@ def sample_random_scenario():
             return (pd.to_datetime(sd).date(), schedule)
     return (pd.to_datetime(sd).date(), [])
 
+# ---------------- EJECUCIÓN DEL OPTIMIZADOR ----------------
+status_ph = st.empty()
+prog_ph = st.empty()
+results = []
+
+if factor_area_to_plants is None or not np.isfinite(auc_cruda):
+    st.info("Necesitás AUC(EMERREL cruda) > 0 para optimizar.")
+else:
+    if st.session_state.opt_running:
+        status_ph.info("Optimizando…")
+
         if optimizer == "Grid (combinatorio)":
             scenarios = build_all_scenarios()
             total = len(scenarios)
@@ -663,7 +730,8 @@ def sample_random_scenario():
                 scenarios = random.sample(scenarios, k=int(max_evals))
                 st.caption(f"Se muestrean {len(scenarios):,} configs (límite)")
             prog = prog_ph.progress(0.0)
-            n = len(scenarios); step = max(1, n // 100)
+            n = len(scenarios)
+            step = max(1, n // 100)
             for i, (sd, sch) in enumerate(scenarios, 1):
                 if st.session_state.opt_stop:
                     break
@@ -674,9 +742,6 @@ def sample_random_scenario():
                     prog.progress(min(1.0, i / n))
             prog_ph.empty()
 
-        # ---------------------------------------------
-        # 🎲 MODO BÚSQUEDA ALEATORIA
-        # ---------------------------------------------
         elif optimizer == "Búsqueda aleatoria":
             N = int(max_evals)
             prog = prog_ph.progress(0.0)
@@ -691,10 +756,7 @@ def sample_random_scenario():
                     prog.progress(min(1.0, i / N))
             prog_ph.empty()
 
-        # ---------------------------------------------
-        # 🔥 MODO RECOCIDO SIMULADO
-        # ---------------------------------------------
-        else:
+        else:  # Recocido simulado
             cur = sample_random_scenario()
             cur_eval = evaluate(*cur)
             tries = 0
@@ -702,7 +764,6 @@ def sample_random_scenario():
                 cur = sample_random_scenario()
                 cur_eval = evaluate(*cur)
                 tries += 1
-
             if cur_eval is None:
                 status_ph.error("No fue posible encontrar un estado inicial válido.")
             else:
@@ -734,10 +795,7 @@ def sample_random_scenario():
     else:
         status_ph.info("Listo para optimizar. Ajustá parámetros y presioná **Iniciar**.")
 
-# ===============================================================
-# 🏆 MEJOR ESCENARIO + GRÁFICOS
-# ===============================================================
-
+# ---------------- VISUALIZACIÓN DEL MEJOR ESCENARIO ----------------
 if results:
     results_sorted = sorted(results, key=lambda r: (r["loss_pct"], r["x3"]))
     best = results_sorted[0]
@@ -746,11 +804,10 @@ if results:
     st.markdown(
         f"**Siembra:** {best['sow']}  \n"
         f"**Pérdida estimada:** {best['loss_pct']:.2f}%  \n"
-        f"**x₂:** {best['x2']:.1f}  ·  **x₃:** {best['x3']:.1f} pl·m²  \n"
-        f"**A2_sup:** {best['A2_sup']:.1f}  ·  **A2_ctrl:** {best['A2_ctrl']:.1f} pl·m²"
+        f"**x₂:** {best['x2']:.1f} · **x₃:** {best['x3']:.1f} pl·m²  \n"
+        f"**A2_sup:** {best['A2_sup']:.1f} · **A2_ctrl:** {best['A2_ctrl']:.1f} pl·m²"
     )
 
-    # Tabla de acciones
     df_best = pd.DataFrame([
         {
             "Intervención": a["kind"],
@@ -764,9 +821,7 @@ if results:
     ])
     st.dataframe(df_best, use_container_width=True)
 
-    # -------------------------------------------------------
-    # 🔄 Recalcular series del mejor escenario
-    # -------------------------------------------------------
+    # ---------- Gráficos ----------
     envb = recompute_for_sow(pd.to_datetime(best["sow"]).date(), int(T12), int(T23), int(T34))
     if envb:
         ts_b = envb["ts"]
@@ -775,7 +830,7 @@ if results:
         S1p, S2p, S3p, S4p = envb["S_pl"]
         sup_cap_b = envb["sup_cap"]
 
-        # Aplicar controles sin solapamiento (acumulativos)
+        # Aplicar controles (sin restricciones)
         c1 = np.ones_like(fechas_d_b, float)
         c2 = np.ones_like(fechas_d_b, float)
         c3 = np.ones_like(fechas_d_b, float)
@@ -799,9 +854,7 @@ if results:
         total_ctrl_daily = (S1p * c1 + S2p * c2 + S3p * c3 + S4p * c4)
         plantas_ctrl_cap_b = np.minimum(total_ctrl_daily, sup_cap_b)
 
-        # -------------------------------------------------------
-        # 📈 Gráfico A — EMERREL + (1−Ciec) + tratamientos
-        # -------------------------------------------------------
+        # Gráfico A — EMERREL + tratamientos
         figA = go.Figure()
         figA.add_trace(go.Scatter(x=ts, y=df_plot["EMERREL"], mode="lines", name="EMERREL cruda"))
         figA.add_trace(go.Scatter(x=ts_b, y=sup_cap_b, name="Sin control", yaxis="y2"))
@@ -814,56 +867,37 @@ if results:
             x0 = pd.to_datetime(a["date"])
             x1 = x0 + pd.Timedelta(days=int(a["days"]))
             figA.add_vrect(x0=x0, x1=x1, fillcolor="rgba(30,144,255,0.18)", opacity=0.18, line_width=0)
-            figA.add_annotation(
-                x=x0 + (x1 - x0) / 2,
-                y=0.9, xref="x", yref="paper",
-                text=a["kind"], showarrow=False,
-                bgcolor="rgba(30,144,255,0.7)"
-            )
+            figA.add_annotation(x=x0 + (x1 - x0) / 2, y=0.9, xref="x", yref="paper",
+                                text=a["kind"], showarrow=False, bgcolor="rgba(30,144,255,0.7)")
 
-        figA.update_layout(
-            title="🌾 EMERREL + (1−Ciec) + Tratamientos — Mejor escenario",
-            xaxis_title="Fecha",
-            yaxis_title="EMERREL",
-            yaxis2=dict(overlaying="y", side="right", title="pl·m²"),
-            yaxis3=dict(overlaying="y", side="right", position=0.97, title="Ciec", range=[0, 1]),
-            margin=dict(l=10, r=10, t=40, b=10)
-        )
+        figA.update_layout(title="🌾 EMERREL + (1−Ciec) + Tratamientos",
+                           xaxis_title="Fecha", yaxis_title="EMERREL",
+                           yaxis2=dict(overlaying="y", side="right", title="pl·m²"),
+                           yaxis3=dict(overlaying="y", side="right", title="Ciec", range=[0, 1]))
         st.plotly_chart(figA, use_container_width=True)
 
-        # -------------------------------------------------------
-        # 📉 Gráfico B — Pérdida vs Densidad efectiva
-        # -------------------------------------------------------
-        X2_b = best["x2"]
-        X3_b = best["x3"]
+        # Gráfico B — Pérdida
+        X2_b = best["x2"]; X3_b = best["x3"]
         x_curve = np.linspace(0.0, MAX_PLANTS_CAP, 400)
         figB = go.Figure()
         figB.add_trace(go.Scatter(x=x_curve, y=_loss(x_curve), mode="lines", name="Función pérdida"))
         figB.add_trace(go.Scatter(x=[X2_b], y=[_loss(X2_b)], mode="markers+text", name="x₂", text=["x₂"], textposition="top center"))
         figB.add_trace(go.Scatter(x=[X3_b], y=[_loss(X3_b)], mode="markers+text", name="x₃", text=["x₃"], textposition="top right"))
-        figB.update_layout(title="Pérdida (%) vs densidad efectiva", xaxis_title="x (pl·m²)", yaxis_title="Pérdida (%)")
+        figB.update_layout(title="Pérdida vs densidad efectiva", xaxis_title="x (pl·m²)", yaxis_title="Pérdida (%)")
         st.plotly_chart(figB, use_container_width=True)
 
-        # -------------------------------------------------------
-        # 📊 Gráfico C — Dinámica S1–S4 (stacked)
-        # -------------------------------------------------------
-        df_states_week_b = (
+        # Gráfico C — S1–S4 semanales
+        df_states_week = (
             pd.DataFrame({"fecha": ts_b, "S1": S1p * c1, "S2": S2p * c2, "S3": S3p * c3, "S4": S4p * c4})
             .set_index("fecha").resample("W-MON").sum().reset_index()
         )
-
         figC = go.Figure()
         for s in ["S1", "S2", "S3", "S4"]:
-            figC.add_trace(go.Scatter(x=df_states_week_b["fecha"], y=df_states_week_b[s],
+            figC.add_trace(go.Scatter(x=df_states_week["fecha"], y=df_states_week[s],
                                       name=s, stackgroup="one", mode="lines"))
-        figC.update_layout(title="Dinámica semanal por estado (con control)", xaxis_title="Fecha", yaxis_title="pl·m²·sem⁻¹")
-        st.plotly_chart(figC, use_container_width=True)
-else:
-    st.info("Aún no hay resultados de optimización para mostrar.")
-
-
-
-
+        figC.update_layout(title="Dinámica semanal S1–S4 (con control)",
+                           xaxis_title="Fecha", yaxis_title="pl·m²·sem⁻¹")
+        st
 
 
 
