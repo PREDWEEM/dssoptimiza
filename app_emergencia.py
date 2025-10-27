@@ -805,7 +805,7 @@ def evaluate(sd: dt.date, schedule: list):
     S1_pl, S2_pl, S3_pl, S4_pl = env["S_pl"]; sup_cap = env["sup_cap"]
     ts_local, fechas_d_local = env["ts"], env["fechas_d"]
 
-    # Controles (1 = sin control, se reduce multiplicando)
+    # Controles (1 = sin control)
     c1 = np.ones_like(fechas_d_local, float)
     c2 = np.ones_like(fechas_d_local, float)
     c3 = np.ones_like(fechas_d_local, float)
@@ -831,6 +831,12 @@ def evaluate(sd: dt.date, schedule: list):
     eff_accum_pre = eff_accum_pre2 = eff_accum_all = 0.0
     def _eff_from_to(prev_eff, this_eff): return 1.0 - (1.0 - prev_eff) * (1.0 - this_eff)
 
+    # 🔸 Identificar fin del postR (para condicionar el graminicida)
+    fin_postR = None
+    for a in schedule:
+        if a["kind"] == "postR":
+            fin_postR = pd.to_datetime(a["date"]) + pd.Timedelta(days=int(a["days"]))
+
     order = {"preR":0,"preemR":1,"postR":2,"post_gram":3}
     for a in sorted(schedule, key=lambda a: order.get(a["kind"], 9)):
         d0, d1 = a["date"], a["date"] + pd.Timedelta(days=int(a["days"]))
@@ -846,13 +852,20 @@ def evaluate(sd: dt.date, schedule: list):
             else:
                 eff_accum_pre2 = eff_accum_pre
         elif a["kind"] == "postR":
-            if eff_accum_pre2 < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2","S3","S4"]) > EPS_REMAIN:
-                _apply_eval(w, a["eff"], ["S1","S2","S3","S4"])
+            # 🔹 postR ahora actúa solo sobre S1–S2
+            if eff_accum_pre2 < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN:
+                _apply_eval(w, a["eff"], ["S1","S2"])
                 eff_accum_all = _eff_from_to(eff_accum_pre2, a["eff"]/100.0)
             else:
                 eff_accum_all = eff_accum_pre2
         elif a["kind"] == "post_gram":
-            if eff_accum_all < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2","S3"]) > EPS_REMAIN:
+            # 🔹 graminicida solo si ocurre después del fin del postR
+            if fin_postR is not None:
+                allow_after_postR = pd.to_datetime(a["date"]) >= fin_postR
+            else:
+                allow_after_postR = True
+            if allow_after_postR and eff_accum_all < EPS_EXCLUDE and a["eff"] > 0 and \
+               _remaining_in_window_eval(w, ["S1","S2","S3"]) > EPS_REMAIN:
                 _apply_eval(w, a["eff"], ["S1","S2","S3"])
 
     tot_ctrl = S1_pl*c1 + S2_pl*c2 + S3_pl*c3 + S4_pl*c4
@@ -873,154 +886,8 @@ def evaluate(sd: dt.date, schedule: list):
     return {"sow": sd, "loss_pct": float(loss3), "x2": X2loc, "x3": X3loc,
             "A2_sup": A2_sup, "A2_ctrl": A2_ctrl, "schedule": schedule}
 
-# ===================== CONSTRUCCIÓN DE ESCENARIOS =====================
-def build_all_scenarios():
-    scenarios = []
-    for sd in sow_candidates:
-        grp = []
-        if use_preR_opt:
-            grp.append([act_presiembraR(d, R, ef_preR_opt) for d in pre_sow_dates(sd) for R in res_days_preR])
-        if use_preemR_opt:
-            grp.append([act_preemR(d, R, ef_preemR_opt) for d in preem_dates(sd) for R in res_days_preemR])
-        if use_post_selR_opt:
-            grp.append([act_post_selR(d, R, ef_post_selR_opt) for d in post_dates(sd) for R in res_days_postR])
-        if use_post_gram_opt:
-            grp.append([act_post_gram(d, ef_post_gram_opt) for d in post_dates(sd)])
-        combos = [[]]
-        for r in range(1, len(grp)+1):
-            for subset in itertools.combinations(range(len(grp)), r):
-                for p in itertools.product(*[grp[i] for i in subset]):
-                    combos.append(list(p))
-        scenarios.extend([(pd.to_datetime(sd).date(), sch) for sch in combos])
-    return scenarios
 
-def sample_random_scenario():
-    sd = random.choice(sow_candidates)
-    schedule = []
-    if use_preR_opt and random.random()<0.7:
-        cand = pre_sow_dates(sd)
-        if cand: schedule.append(act_presiembraR(random.choice(cand), random.choice(res_days_preR), ef_preR_opt))
-    if use_preemR_opt and random.random()<0.7:
-        cand = preem_dates(sd)
-        if cand: schedule.append(act_preemR(random.choice(cand), random.choice(res_days_preemR), ef_preemR_opt))
-    if use_post_selR_opt and random.random()<0.7:
-        cand = post_dates(sd)
-        if cand: schedule.append(act_post_selR(random.choice(cand), random.choice(res_days_postR), ef_post_selR_opt))
-    if use_post_gram_opt and random.random()<0.7:
-        cand = post_dates(sd)
-        if cand: schedule.append(act_post_gram(random.choice(cand), ef_post_gram_opt))
-    return (pd.to_datetime(sd).date(), schedule)
-
-# ===================== EJECUCIÓN DEL OPTIMIZADOR =====================
-status_ph = st.empty()
-prog_ph = st.empty()
-results = []
-
-if factor_area_to_plants is None or not np.isfinite(auc_cruda):
-    st.info("Necesitás AUC(EMERREL cruda) > 0 para optimizar.")
-else:
-    if st.session_state.opt_running:
-        status_ph.info("Optimizando…")
-        if optimizer == "Grid (combinatorio)":
-            scenarios = build_all_scenarios()
-            total = len(scenarios)
-            st.caption(f"Se evaluarán {total:,} configuraciones")
-            if total > max_evals:
-                random.seed(123)
-                scenarios = random.sample(scenarios, k=int(max_evals))
-                st.caption(f"Se muestrean {len(scenarios):,} configs (límite)")
-            prog = prog_ph.progress(0.0); n = len(scenarios); step = max(1, n//100)
-            for i,(sd,sch) in enumerate(scenarios,1):
-                if st.session_state.opt_stop:
-                    status_ph.warning(f"Detenida. Progreso: {i-1:,}/{n:,}")
-                    break
-                r = evaluate(sd, sch)
-                if r is not None: results.append(r)
-                if i % step == 0 or i == n: prog.progress(min(1.0, i/n))
-            prog_ph.empty()
-        elif optimizer == "Búsqueda aleatoria":
-            N = int(max_evals); prog = prog_ph.progress(0.0)
-            for i in range(1, N+1):
-                if st.session_state.opt_stop:
-                    status_ph.warning(f"Detenida. Progreso: {i-1:,}/{N:,}")
-                    break
-                sd, sch = sample_random_scenario()
-                r = evaluate(sd, sch)
-                if r is not None: results.append(r)
-                if i % max(1, N//100) == 0 or i == N: prog.progress(min(1.0, i/N))
-            prog_ph.empty()
-        else:
-            cur = sample_random_scenario()
-            cur_eval = evaluate(*cur)
-            tries=0
-            while cur_eval is None and tries<200:
-                cur = sample_random_scenario(); cur_eval = evaluate(*cur); tries+=1
-            if cur_eval is None:
-                status_ph.error("No fue posible encontrar un estado inicial válido.")
-            else:
-                best_eval = cur_eval; cur_loss = cur_eval["loss_pct"]; T = float(sa_T0)
-                prog = prog_ph.progress(0.0)
-                for it in range(1, int(sa_iters)+1):
-                    if st.session_state.opt_stop:
-                        status_ph.warning(f"Detenida en iteración {it-1:,}/{int(sa_iters):,}.")
-                        break
-                    cand = sample_random_scenario()
-                    cand_eval = evaluate(*cand)
-                    if cand_eval is not None:
-                        d = cand_eval["loss_pct"] - cur_loss
-                        if d <= 0 or random.random() < _math.exp(-d / max(1e-9, T)):
-                            cur, cur_eval, cur_loss = cand, cand_eval, cand_eval["loss_pct"]
-                            results.append(cur_eval)
-                            if cur_loss < best_eval["loss_pct"]:
-                                best_eval = cur_eval
-                    T *= float(sa_cooling)
-                    if it % max(1, int(sa_iters)//100) == 0 or it == int(sa_iters):
-                        prog.progress(min(1.0, it/float(sa_iters)))
-                results.append(best_eval)
-                prog_ph.empty()
-        st.session_state.opt_running = False
-        st.session_state.opt_stop = False
-        status_ph.success("Optimización finalizada.")
-    else:
-        status_ph.info("Listo para optimizar. Ajustá parámetros y presioná **Iniciar**.")
-
-# ===================== REPORTE Y GRÁFICOS DEL MEJOR ESCENARIO =====================
-if results:
-    results_sorted = sorted(results, key=lambda r: (r["loss_pct"], r["x3"]))
-    best = results_sorted[0]
-
-    st.subheader("🏆 Mejor escenario")
-    st.markdown(
-        f"**Siembra:** **{best['sow']}**  \n"
-        f"**Pérdida estimada:** **{best['loss_pct']:.2f}%**  \n"
-        f"**x₂:** {best['x2']:.1f} · **x₃:** {best['x3']:.1f} pl·m²  \n"
-        f"**A2_sup:** {best['A2_sup']:.1f} · **A2_ctrl:** {best['A2_ctrl']:.1f} pl·m²"
-    )
-
-    # Tabla y descarga del cronograma
-    def schedule_df(sch):
-        rows=[]
-        for a in sch:
-            ini = pd.to_datetime(a["date"]); fin = ini + pd.Timedelta(days=int(a["days"]))
-            rows.append({"Intervención": a["kind"], "Inicio": str(ini.date()), "Fin": str(fin.date()),
-                         "Duración (d)": int(a["days"]), "Eficiencia (%)": int(a["eff"]), "Estados": ",".join(a["states"])})
-        return pd.DataFrame(rows)
-
-    df_best = schedule_df(best["schedule"])
-    if len(df_best):
-        st.dataframe(df_best, use_container_width=True)
-        st.download_button("Descargar mejor cronograma (CSV)", df_best.to_csv(index=False).encode("utf-8"),
-                           "mejor_cronograma.csv", "text/csv")
-
-    # Recomputo y gráficos completos del mejor
-    envb = recompute_for_sow(pd.to_datetime(best["sow"]).date(), int(T12), int(T23), int(T34))
-    if envb is None:
-        st.info("No se pudieron recomputar series para el mejor escenario.")
-    else:
-        ts_b = envb["ts"]; fechas_d_b = envb["fechas_d"]; mask_since_b = envb["mask_since"]
-        S1p, S2p, S3p, S4p = envb["S_pl"]; sup_cap_b = envb["sup_cap"]
-
-        # Reaplicar agenda (con jerarquía y gateo)
+        # -------- Reaplicar agenda (con jerarquía y gateo) — MODIFICADO
         c1 = np.ones_like(fechas_d_b, float); c2 = np.ones_like(fechas_d_b, float)
         c3 = np.ones_like(fechas_d_b, float); c4 = np.ones_like(fechas_d_b, float)
 
@@ -1045,6 +912,12 @@ if results:
         def _eff_from_to(prev_eff, this_eff): return 1.0 - (1.0 - prev_eff) * (1.0 - this_eff)
         order = {"preR":0,"preemR":1,"postR":2,"post_gram":3}
 
+        # 🔸 Determinar fin del postR
+        fin_postR = None
+        for a in best["schedule"]:
+            if a["kind"] == "postR":
+                fin_postR = pd.to_datetime(a["date"]) + pd.Timedelta(days=int(a["days"]))
+
         for a in sorted(best["schedule"], key=lambda a: order.get(a["kind"], 9)):
             ini = pd.to_datetime(a["date"]).date()
             fin = (pd.to_datetime(a["date"]) + pd.Timedelta(days=int(a["days"]))).date()
@@ -1060,86 +933,21 @@ if results:
                 else:
                     eff_accum_pre2 = eff_accum_pre
             elif a["kind"] == "postR":
-                if eff_accum_pre2 < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2","S3","S4"]) > EPS_REMAIN:
-                    _apply_eval(w, a["eff"], ["S1","S2","S3","S4"])
+                # 🔹 postR actúa solo sobre S1–S2
+                if eff_accum_pre2 < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN:
+                    _apply_eval(w, a["eff"], ["S1","S2"])
                     eff_accum_all = _eff_from_to(eff_accum_pre2, a["eff"]/100.0)
                 else:
                     eff_accum_all = eff_accum_pre2
             elif a["kind"] == "post_gram":
-                if eff_accum_all < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2","S3"]) > EPS_REMAIN:
+                # 🔹 graminicida solo si ocurre después del fin del postR
+                if fin_postR is not None:
+                    allow_after_postR = pd.to_datetime(a["date"]) >= fin_postR
+                else:
+                    allow_after_postR = True
+                if allow_after_postR and eff_accum_all < EPS_EXCLUDE and a["eff"] > 0 and \
+                   _remaining_in_window_eval(w, ["S1","S2","S3"]) > EPS_REMAIN:
                     _apply_eval(w, a["eff"], ["S1","S2","S3"])
-
-        total_ctrl_daily = (S1p*c1 + S2p*c2 + S3p*c3 + S4p*c4)
-        eps = 1e-12
-        scale = np.where(total_ctrl_daily > eps, np.minimum(1.0, sup_cap_b / total_ctrl_daily), 0.0)
-        S1_ctrl_cap_b = S1p * c1 * scale; S2_ctrl_cap_b = S2p * c2 * scale
-        S3_ctrl_cap_b = S3p * c3 * scale; S4_ctrl_cap_b = S4p * c4 * scale
-
-        # -------- Gráfico A: EMERREL + aportes semanales con/ sin control + Ciec (mejor)
-        df_daily_b = pd.DataFrame({
-            "fecha": ts_b,
-            "pl_sin_ctrl_cap": np.where(mask_since_b, sup_cap_b, 0.0),
-            "pl_con_ctrl_cap": np.where(mask_since_b, S1_ctrl_cap_b+S2_ctrl_cap_b+S3_ctrl_cap_b+S4_ctrl_cap_b, 0.0),
-        })
-        df_week_b = df_daily_b.set_index("fecha").resample("W-MON").sum().reset_index()
-
-        fig_best1 = go.Figure()
-        fig_best1.add_trace(go.Scatter(x=ts, y=df_plot["EMERREL"], mode="lines", name="EMERREL (cruda)"))
-        fig_best1.add_trace(go.Scatter(x=df_week_b["fecha"], y=df_week_b["pl_sin_ctrl_cap"], name="Aporte semanal (sin control, cap)", yaxis="y2", mode="lines+markers"))
-        fig_best1.add_trace(go.Scatter(x=df_week_b["fecha"], y=df_week_b["pl_con_ctrl_cap"], name="Aporte semanal (con control, cap)", yaxis="y2", mode="lines+markers", line=dict(dash="dot")))
-
-        one_minus_best = compute_ciec_for(pd.to_datetime(best["sow"]).date())
-        Ciec_best = 1.0 - one_minus_best
-        fig_best1.add_trace(go.Scatter(x=ts_b, y=Ciec_best, mode="lines", name="Ciec (mejor)", yaxis="y3"))
-
-        fig_best1.update_layout(
-            margin=dict(l=10, r=10, t=40, b=10),
-            title="EMERREL y plantas·m²·semana · Mejor escenario",
-            xaxis_title="Tiempo", yaxis_title="EMERREL",
-            yaxis2=dict(overlaying="y", side="right", title="pl·m²·sem⁻¹", range=[0,100]),
-            yaxis3=dict(overlaying="y", side="right", title="Ciec", position=0.97, range=[0,1])
-        )
-
-        for a in best["schedule"]:
-            x0 = pd.to_datetime(a["date"]); x1 = x0 + pd.Timedelta(days=int(a["days"]))
-            fig_best1.add_vrect(x0=x0, x1=x1, line_width=0, fillcolor="rgba(30,144,255,0.18)", opacity=0.18)
-            fig_best1.add_annotation(x=x0 + (x1-x0)/2, y=0.86, xref="x", yref="paper",
-                                     text=a["kind"], showarrow=False, bgcolor="rgba(30,144,255,0.85)")
-        st.plotly_chart(fig_best1, use_container_width=True)
-
-        # -------- Gráfico B: Pérdida (%) vs x con marcadores x2 y x3
-        X2_b = float(np.nansum(sup_cap_b[mask_since_b]))
-        X3_b = float(np.nansum((S1_ctrl_cap_b+S2_ctrl_cap_b+S3_ctrl_cap_b+S4_ctrl_cap_b)[mask_since_b]))
-        x_curve = np.linspace(0.0, MAX_PLANTS_CAP, 400); y_curve = _loss(x_curve)
-        fig2_best = go.Figure()
-        fig2_best.add_trace(go.Scatter(x=x_curve, y=y_curve, mode="lines", name="Modelo pérdida % vs x"))
-        fig2_best.add_trace(go.Scatter(x=[X2_b], y=[_loss(X2_b)], mode="markers+text", name="x₂ (sin ctrl)", text=[f"x₂={X2_b:.1f}"], textposition="top center"))
-        fig2_best.add_trace(go.Scatter(x=[X3_b], y=[_loss(X3_b)], mode="markers+text", name="x₃ (con ctrl)", text=[f"x₃={X3_b:.1f}"], textposition="top right"))
-        fig2_best.update_layout(title="Figura — Pérdida de rendimiento (%) vs x", xaxis_title="x (pl·m²)", yaxis_title="Pérdida (%)")
-        st.plotly_chart(fig2_best, use_container_width=True)
-
-        # -------- Gráfico C: Dinámica S1–S4 semanal (stacked) con control + cap
-        df_states_week_b = (
-            pd.DataFrame({"fecha": ts_b, "S1": S1_ctrl_cap_b, "S2": S2_ctrl_cap_b, "S3": S3_ctrl_cap_b, "S4": S4_ctrl_cap_b})
-            .set_index("fecha").resample("W-MON").sum().reset_index()
-        )
-        st.subheader("Dinámica temporal de S1–S4 (con control + cap) — Mejor escenario")
-        fig_states = go.Figure()
-        for col in ["S1","S2","S3","S4"]:
-            fig_states.add_trace(go.Scatter(x=df_states_week_b["fecha"], y=df_states_week_b[col], mode="lines", name=col, stackgroup="one"))
-        fig_states.update_layout(title="Aportes semanales por estado (con control + cap)", xaxis_title="Tiempo", yaxis_title="pl·m²·sem⁻¹")
-        st.plotly_chart(fig_states, use_container_width=True)
-else:
-    st.info("Aún no hay resultados de optimización para mostrar.")
-
-
-
-
-
-
-
-
-
 
 
 
