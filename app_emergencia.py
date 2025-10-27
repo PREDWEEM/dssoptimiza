@@ -611,6 +611,47 @@ st.markdown(
 **A2 (ctrl, cap):** **{A2_ctrl_final if np.isfinite(A2_ctrl_final) else float('nan'):.1f}** pl·m²
 """
 )
+
+# =====================================================
+# FUNCIONES DE ACCIONES BÁSICAS (deben ir antes del optimizador)
+# =====================================================
+
+def act_presiembraR(date_val, R, eff):
+    return {
+        "kind": "preR",
+        "date": pd.to_datetime(date_val).date(),
+        "days": int(R),
+        "eff": eff,
+        "states": ["S1", "S2"]
+    }
+
+def act_preemR(date_val, R, eff):
+    return {
+        "kind": "preemR",
+        "date": pd.to_datetime(date_val).date(),
+        "days": int(R),
+        "eff": eff,
+        "states": ["S1", "S2"]
+    }
+
+def act_post_selR(date_val, R, eff):
+    return {
+        "kind": "postR",
+        "date": pd.to_datetime(date_val).date(),
+        "days": int(R),
+        "eff": eff,
+        "states": ["S1", "S2", "S3", "S4"]
+    }
+
+def act_post_gram(date_val, eff):
+    return {
+        "kind": "post_gram",
+        "date": pd.to_datetime(date_val).date(),
+        "days": POST_GRAM_FORWARD_DAYS,
+        "eff": eff,
+        "states": ["S1", "S2", "S3"]
+    }
+
 # =====================================================
 #                OPTIMIZACIÓN (residualidades separadas)
 # =====================================================
