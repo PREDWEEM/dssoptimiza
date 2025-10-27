@@ -886,13 +886,11 @@ def evaluate(sd: dt.date, schedule: list):
     return {"sow": sd, "loss_pct": float(loss3), "x2": X2loc, "x3": X3loc,
             "A2_sup": A2_sup, "A2_ctrl": A2_ctrl, "schedule": schedule}
 
-
-
     # -------- Reaplicar agenda (con jerarquía y gateo) — MODIFICADO
-c1 = np.ones_like(fechas_d_b, float)
-c2 = np.ones_like(fechas_d_b, float)
-c3 = np.ones_like(fechas_d_b, float)
-c4 = np.ones_like(fechas_d_b, float)
+c1 = np.ones_like(ts_b, float)
+c2 = np.ones_like(ts_b, float)
+c3 = np.ones_like(ts_b, float)
+c4 = np.ones_like(ts_b, float)
 
 def _remaining_in_window_eval(w, states):
     rem = 0.0
@@ -926,7 +924,7 @@ for a in best["schedule"]:
 for a in sorted(best["schedule"], key=lambda a: order.get(a["kind"], 9)):
     ini = pd.to_datetime(a["date"]).date()
     fin = (pd.to_datetime(a["date"]) + pd.Timedelta(days=int(a["days"]))).date()
-    w = ((fechas_d_b >= ini) & (fechas_d_b < fin)).astype(float)
+    w = ((ts_b.dt.date >= ini) & (ts_b.dt.date < fin)).astype(float)
     if a["kind"] == "preR":
         if _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN and a["eff"] > 0:
             _apply_eval(w, a["eff"], ["S1","S2"])
@@ -956,8 +954,8 @@ for a in sorted(best["schedule"], key=lambda a: order.get(a["kind"], 9)):
            _remaining_in_window_eval(w, ["S1","S2","S3"]) > EPS_REMAIN:
             _apply_eval(w, a["eff"], ["S1","S2","S3"])
 
-        
 
+   
 # =====================================================
 # BLOQUE FINAL — Optimización (residualidades separadas) + Mejor escenario (gráficos)
 # =====================================================
