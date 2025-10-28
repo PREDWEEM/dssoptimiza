@@ -685,6 +685,135 @@ def act_preemR(date_val, R, eff):      return {"kind":"preemR","date":pd.to_date
 def act_post_selR(date_val, R, eff):   return {"kind":"postR","date":pd.to_datetime(date_val).date(),"days":int(R),"eff":eff,"states":["S1","S2","S3"]}
 def act_post_gram(date_val, eff):      return {"kind":"post_gram","date":pd.to_datetime(date_val).date(),"days":POST_GRAM_FORWARD_DAYS,"eff":eff,"states":["S1","S2","S3","S4"]}
 
+# -------------------- EVALUACIÓN DE UN CRONOGRAMA --------------------
+
+def evaluate(sd: dt.date, schedule: list):
+    """
+    Evalúa una agenda de tratamientos para una fecha de siembra sd.
+    Devuelve dict con métricas (loss_pct, x2, x3, A2_sup, A2_ctrl) o None si viola reglas.
+    """
+    sow = pd.to_datetime(sd)
+    sow_plus_20 = sow + pd.Timedelta(days=20)
+
+    # Reglas duras de fechas (incluye gram ≥14 días postR)
+    for a in schedule:
+        d = pd.to_datetime(a["date"])
+        if a["kind"] == "postR"  and d < sow_plus_20:
+            return None
+        if a["kind"] == "preR"   and d > (sow - pd.Timedelta(days=PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW)):
+            return None
+        if a["kind"] == "preemR" and (d < sow or d > (sow + pd.Timedelta(days=PREEM_R_MAX_AFTER_SOW_DAYS))):
+            return None
+        if a["kind"] == "post_gram":
+            postR_dates = [pd.to_datetime(x["date"]) for x in schedule if x["kind"] == "postR"]
+            if postR_dates:
+                min_gap = min((d - pr).days for pr in postR_dates)
+                if min_gap < 14:
+                    return None
+
+    # Reconstrucción de estados y aportes para esta siembra
+    env = recompute_for_sow(sd, int(T12), int(T23), int(T34))
+    if env is None:
+        return None
+
+    mask_since   = env["mask_since"]
+    factor_area  = env["factor_area"]
+    auc_cruda_loc = env["auc_cruda"]
+    S1_pl, S2_pl, S3_pl, S4_pl = env["S_pl"]
+    sup_cap      = env["sup_cap"]
+    ts_local     = env["ts"]
+    fechas_d     = env["fechas_d"]
+
+    # Control multiplicativo por estado (1 = sin control)
+    c1 = np.ones_like(fechas_d, float)
+    c2 = np.ones_like(fechas_d, float)
+    c3 = np.ones_like(fechas_d, float)
+    c4 = np.ones_like(fechas_d, float)
+
+    def _remaining_in_window_eval(w, states):
+        rem = 0.0
+        if "S1" in states: rem += np.sum(S1_pl * c1 * w)
+        if "S2" in states: rem += np.sum(S2_pl * c2 * w)
+        if "S3" in states: rem += np.sum(S3_pl * c3 * w)
+        if "S4" in states: rem += np.sum(S4_pl * c4 * w)
+        return float(rem)
+
+    def _apply_eval(w, eff, states):
+        if eff <= 0:
+            return False
+        reduc = np.clip(1.0 - (eff/100.0) * np.clip(w, 0.0, 1.0), 0.0, 1.0)
+        if "S1" in states: np.multiply(c1, reduc, out=c1)
+        if "S2" in states: np.multiply(c2, reduc, out=c2)
+        if "S3" in states: np.multiply(c3, reduc, out=c3)
+        if "S4" in states: np.multiply(c4, reduc, out=c4)
+        return True
+
+    # Gateo por acumulado de eficiencias
+    eff_accum_pre = 0.0
+    eff_accum_pre2 = 0.0
+    eff_accum_all = 0.0
+    def _eff_from_to(prev_eff, this_eff):  # combina eficiencias independientes
+        return 1.0 - (1.0 - prev_eff) * (1.0 - this_eff)
+
+    # Orden jerárquico
+    order = {"preR": 0, "preemR": 1, "postR": 2, "post_gram": 3}
+
+    # Aplicación de agenda (ventanas como máscaras directas por fechas)
+    for a in sorted(schedule, key=lambda a: order.get(a["kind"], 9)):
+        ini = pd.to_datetime(a["date"]).date()
+        fin = (pd.to_datetime(a["date"]) + pd.Timedelta(days=int(a["days"]))).date()
+        w = ((fechas_d >= ini) & (fechas_d < fin)).astype(float)
+
+        if a["kind"] == "preR":
+            if _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN and a["eff"] > 0:
+                _apply_eval(w, a["eff"], ["S1","S2"])
+                eff_accum_pre = _eff_from_to(0.0, a["eff"]/100.0)
+
+        elif a["kind"] == "preemR":
+            if eff_accum_pre < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN:
+                _apply_eval(w, a["eff"], ["S1","S2"])
+                eff_accum_pre2 = _eff_from_to(eff_accum_pre, a["eff"]/100.0)
+            else:
+                eff_accum_pre2 = eff_accum_pre
+
+        elif a["kind"] == "postR":
+            if eff_accum_pre2 < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2","S3"]) > EPS_REMAIN:
+                _apply_eval(w, a["eff"], ["S1","S2","S3"])
+                eff_accum_all = _eff_from_to(eff_accum_pre2, a["eff"]/100.0)
+            else:
+                eff_accum_all = eff_accum_pre2
+
+        elif a["kind"] == "post_gram":
+            # La validación ≥14d postR ya se hizo en reglas duras
+            if eff_accum_all < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2","S3","S4"]) > EPS_REMAIN:
+                _apply_eval(w, a["eff"], ["S1","S2","S3","S4"])
+
+    # Totales con control y capeo por sup_cap
+    tot_ctrl = S1_pl*c1 + S2_pl*c2 + S3_pl*c3 + S4_pl*c4
+    plantas_ctrl_cap = np.minimum(tot_ctrl, sup_cap)
+
+    # x2/x3
+    X2loc = float(np.nansum(sup_cap[mask_since]))
+    X3loc = float(np.nansum(plantas_ctrl_cap[mask_since]))
+    loss3 = _loss(X3loc)
+
+    # A2 vía AUC equivalentes
+    sup_equiv  = np.divide(sup_cap,          factor_area, out=np.zeros_like(sup_cap),          where=(factor_area>0))
+    ctrl_equiv = np.divide(plantas_ctrl_cap, factor_area, out=np.zeros_like(plantas_ctrl_cap), where=(factor_area>0))
+    auc_sup      = auc_time(ts_local, sup_equiv,  mask=mask_since)
+    auc_sup_ctrl = auc_time(ts_local, ctrl_equiv, mask=mask_since)
+    A2_sup  = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP * (auc_sup      / auc_cruda_loc))
+    A2_ctrl = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP * (auc_sup_ctrl / auc_cruda_loc))
+
+    return {
+        "sow": sd,
+        "loss_pct": float(loss3),
+        "x2": X2loc,
+        "x3": X3loc,
+        "A2_sup": A2_sup,
+        "A2_ctrl": A2_ctrl,
+        "schedule": schedule
+    }
 
 # -------------------- CONSTRUCCIÓN DE ESCENARIOS --------------------
 
