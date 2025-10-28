@@ -835,6 +835,127 @@ def evaluate(sd: dt.date, schedule: list):
         "A2_sup": A2_sup, "A2_ctrl": A2_ctrl,
         "schedule": schedule
     }
+# ===============================================================
+# 🔧 HOTFIX — Helpers imprescindibles ANTES de evaluate(...)
+# Pegar este bloque ANTES de def evaluate(...) y/o ANTES de ejecutar el optimizador
+# ===============================================================
+
+# ---- Comprobaciones mínimas de dependencias de entorno
+_needed_globals = [
+    "ts", "df_plot", "MAX_PLANTS_CAP", "FC_S",
+    "compute_canopy", "auc_time", "cap_cumulative",
+    "use_ciec", "LAIhc", "Ca", "Cs",
+    "mode_canopy", "t_lag", "t_close", "cov_max", "lai_max", "k_beer"
+]
+_missing = [k for k in _needed_globals if k not in globals()]
+if _missing:
+    st.error(f"Faltan variables/funciones previas para helpers: {', '.join(_missing)}. "
+             "Mové este bloque más abajo o definí primero esas variables.")
+    st.stop()
+
+# ---- compute_ciec_for si no existe
+if "compute_ciec_for" not in globals():
+    def compute_ciec_for(sow_d: dt.date):
+        """Devuelve (1−Ciec) dinámico para una fecha de siembra dada."""
+        FCx, LAIx = compute_canopy(
+            ts, sow_d, mode_canopy,
+            int(t_lag), int(t_close),
+            float(cov_max), float(lai_max), float(k_beer)
+        )
+        if use_ciec:
+            Ciec_loc = np.clip(
+                (LAIx / max(1e-6, float(LAIhc))) *
+                ((float(Ca) if Ca > 0 else 1e-6) / (float(Cs) if Cs > 0 else 1e-6)),
+                0.0, 1.0
+            )
+        else:
+            Ciec_loc = np.zeros_like(LAIx, float)
+        return np.clip(1.0 - Ciec_loc, 0.0, 1.0)
+
+# ---- recompute_for_sow si no existe
+if "recompute_for_sow" not in globals():
+    def recompute_for_sow(sow_d: dt.date, T12: int, T23: int, T34: int):
+        """
+        Reconstruye S1–S4 (secuenciales) y densidades ajustadas para una siembra específica.
+        Retorna:
+          {
+            "mask_since": bool[],
+            "factor_area": float,
+            "auc_cruda": float,
+            "S_pl": (S1_pl, S2_pl, S3_pl, S4_pl),
+            "sup_cap": float[],
+            "ts": ts,
+            "fechas_d": date[]
+          }
+        """
+        # máscara desde siembra
+        mask_since = (ts.dt.date >= sow_d)
+
+        # nacimientos (EMERREL) solo desde siembra
+        births = np.where(mask_since.to_numpy(), df_plot["EMERREL"].to_numpy(float), 0.0)
+
+        # (1−Ciec) para esa siembra
+        one_minus = compute_ciec_for(sow_d)
+
+        # estados secuenciales con retardos T12,T23,T34
+        S1 = births.copy()
+        S2 = np.zeros_like(births)
+        S3 = np.zeros_like(births)
+        S4 = np.zeros_like(births)
+        for i in range(len(births)):
+            if i - int(T12) >= 0:
+                moved = births[i - int(T12)]; S1[i - int(T12)] -= moved; S2[i] += moved
+            if i - (int(T12)+int(T23)) >= 0:
+                moved = births[i - (int(T12)+int(T23))]; S2[i - (int(T12)+int(T23))] -= moved; S3[i] += moved
+            if i - (int(T12)+int(T23)+int(T34)) >= 0:
+                moved = births[i - (int(T12)+int(T23)+int(T34))]; S3[i - (int(T12)+int(T23)+int(T34))] -= moved; S4[i] += moved
+
+        S1 = np.clip(S1, 0.0, None)
+        S2 = np.clip(S2, 0.0, None)
+        S3 = np.clip(S3, 0.0, None)
+        S4 = np.clip(S4, 0.0, None)
+
+        total_states = S1 + S2 + S3 + S4
+        emeac = np.cumsum(births)
+        scale = np.minimum(
+            np.divide(np.clip(emeac, 1e-9, None), np.clip(total_states, 1e-9, None)),
+            1.0
+        )
+        S1 *= scale; S2 *= scale; S3 *= scale; S4 *= scale
+
+        # factor área (A2) desde siembra
+        AUC_THR = 1e-9
+        auc_cruda_loc = auc_time(ts, df_plot["EMERREL"].to_numpy(float), mask=mask_since)
+        if not np.isfinite(auc_cruda_loc) or auc_cruda_loc <= AUC_THR:
+            return None
+        factor_area = MAX_PLANTS_CAP / auc_cruda_loc
+
+        # aportes en pl·m² con supresión (1−Ciec) y pesos FC_S
+        S1_pl = np.where(mask_since, S1 * one_minus * FC_S["S1"] * factor_area, 0.0)
+        S2_pl = np.where(mask_since, S2 * one_minus * FC_S["S2"] * factor_area, 0.0)
+        S3_pl = np.where(mask_since, S3 * one_minus * FC_S["S3"] * factor_area, 0.0)
+        S4_pl = np.where(mask_since, S4 * one_minus * FC_S["S4"] * factor_area, 0.0)
+
+        # cap diario por A2
+        base_pl_daily     = np.where(mask_since, df_plot["EMERREL"].to_numpy(float) * factor_area, 0.0)
+        base_pl_daily_cap = cap_cumulative(base_pl_daily, MAX_PLANTS_CAP, mask_since.to_numpy())
+        sup_cap = np.minimum(S1_pl + S2_pl + S3_pl + S4_pl, base_pl_daily_cap)
+
+        return {
+            "mask_since": mask_since.to_numpy(),
+            "factor_area": factor_area,
+            "auc_cruda": auc_cruda_loc,
+            "S_pl": (S1_pl, S2_pl, S3_pl, S4_pl),
+            "sup_cap": sup_cap,
+            "ts": ts,
+            "fechas_d": ts.dt.date.values
+        }
+
+# ---- Guardas de verificación (opcionales, útiles durante integración)
+for _name in ["compute_ciec_for", "recompute_for_sow"]:
+    if _name not in globals() or not callable(globals()[_name]):
+        st.error(f"No se encontró helper requerido: `{_name}`. Revisá el orden/indentación.")
+        st.stop()
 
 
 # ===============================================================
