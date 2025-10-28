@@ -755,7 +755,7 @@ def recompute_for_sow(sow_d: dt.date, T12: int, T23: int, T34: int):
     base_pl_daily_cap = cap_cumulative(base_pl_daily, MAX_PLANTS_CAP, mask_since.to_numpy())
     sup_cap = np.minimum(S1_pl + S2_pl + S3_pl + S4_pl, base_pl_daily_cap)
 
-     return {
+      return {
         "mask_since": mask_since.to_numpy(),
         "factor_area": factor_area,
         "auc_cruda": auc_cruda_loc,
