@@ -1094,28 +1094,28 @@ if results:
 
         # -------- Pintar franjas según tipo de intervención (colores distintos con misma atenuación)
         color_map = {
-            "preR": "rgba(255,165,0,0.25)",    # naranja — presiembra residual
-            "preemR": "rgba(46,204,113,0.30)", # verde — preemergente residual
-            "postR": "rgba(30,144,255,0.18)",  # azul — post-emergente residual
-            "post_gram": "rgba(255,99,132,0.18)" # rosado — graminicida post
+            "preR": "rgba(255,165,0,0.35)",    # naranja — presiembra residual
+            "preemR": "rgba(46,204,113,0.35)", # verde — preemergente residual
+            "postR": "rgba(30,144,255,0.35)",  # azul — post-emergente residual
+            "post_gram": "rgba(255,99,132,0.35)" # rosado — graminicida post
         }
 
         for a in best["schedule"]:
             x0 = pd.to_datetime(a["date"])
             x1 = x0 + pd.Timedelta(days=int(a["days"]))
-            color = color_map.get(a["kind"], "rgba(128,128,128,0.30)")
+            color = color_map.get(a["kind"], "rgba(128,128,128,0.35)")
             fig_best1.add_vrect(
                 x0=x0, x1=x1,
                 line_width=0,
                 fillcolor=color,
-                opacity=0.30
+                opacity=0.35
             )
             fig_best1.add_annotation(
                 x=x0 + (x1 - x0) / 2,
                 y=0.86, xref="x", yref="paper",
                 text=a["kind"],
                 showarrow=False,
-                bgcolor=color.replace("0.30", "0.85"),
+                bgcolor=color.replace("0.35", "0.90"),
                 font=dict(color="white")
             )
 
