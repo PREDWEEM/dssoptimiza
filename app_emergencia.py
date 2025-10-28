@@ -960,30 +960,46 @@ if results:
 
     # Tabla y descarga del cronograma
     def schedule_df(sch):
-        rows=[]
+        rows = []
         for a in sch:
-            ini = pd.to_datetime(a["date"]); fin = ini + pd.Timedelta(days=int(a["days"]))
-            rows.append({"Intervención": a["kind"], "Inicio": str(ini.date()), "Fin": str(fin.date()),
-                         "Duración (d)": int(a["days"]), "Eficiencia (%)": int(a["eff"]), "Estados": ",".join(a["states"])})
+            ini = pd.to_datetime(a["date"])
+            fin = ini + pd.Timedelta(days=int(a["days"]))
+            rows.append({
+                "Intervención": a["kind"],
+                "Inicio": str(ini.date()),
+                "Fin": str(fin.date()),
+                "Duración (d)": int(a["days"]),
+                "Eficiencia (%)": int(a["eff"]),
+                "Estados": ",".join(a["states"])
+            })
         return pd.DataFrame(rows)
 
     df_best = schedule_df(best["schedule"])
     if len(df_best):
         st.dataframe(df_best, use_container_width=True)
-        st.download_button("Descargar mejor cronograma (CSV)", df_best.to_csv(index=False).encode("utf-8"),
-                           "mejor_cronograma.csv", "text/csv")
+        st.download_button(
+            "Descargar mejor cronograma (CSV)",
+            df_best.to_csv(index=False).encode("utf-8"),
+            "mejor_cronograma.csv",
+            "text/csv"
+        )
 
     # Recomputo y gráficos completos del mejor
     envb = recompute_for_sow(pd.to_datetime(best["sow"]).date(), int(T12), int(T23), int(T34))
     if envb is None:
         st.info("No se pudieron recomputar series para el mejor escenario.")
     else:
-        ts_b = envb["ts"]; fechas_d_b = envb["fechas_d"]; mask_since_b = envb["mask_since"]
-        S1p, S2p, S3p, S4p = envb["S_pl"]; sup_cap_b = envb["sup_cap"]
+        ts_b = envb["ts"]
+        fechas_d_b = envb["fechas_d"]
+        mask_since_b = envb["mask_since"]
+        S1p, S2p, S3p, S4p = envb["S_pl"]
+        sup_cap_b = envb["sup_cap"]
 
         # Reaplicar agenda (con jerarquía y gateo)
-        c1 = np.ones_like(fechas_d_b, float); c2 = np.ones_like(fechas_d_b, float)
-        c3 = np.ones_like(fechas_d_b, float); c4 = np.ones_like(fechas_d_b, float)
+        c1 = np.ones_like(fechas_d_b, float)
+        c2 = np.ones_like(fechas_d_b, float)
+        c3 = np.ones_like(fechas_d_b, float)
+        c4 = np.ones_like(fechas_d_b, float)
 
         def _remaining_in_window_eval(w, states):
             rem = 0.0
@@ -994,8 +1010,9 @@ if results:
             return float(rem)
 
         def _apply_eval(w, eff, states):
-            if eff <= 0: return False
-            reduc = np.clip(1.0 - (eff/100.0)*np.clip(w,0.0,1.0), 0.0, 1.0)
+            if eff <= 0:
+                return False
+            reduc = np.clip(1.0 - (eff / 100.0) * np.clip(w, 0.0, 1.0), 0.0, 1.0)
             if "S1" in states: np.multiply(c1, reduc, out=c1)
             if "S2" in states: np.multiply(c2, reduc, out=c2)
             if "S3" in states: np.multiply(c3, reduc, out=c3)
@@ -1003,146 +1020,164 @@ if results:
             return True
 
         eff_accum_pre = eff_accum_pre2 = eff_accum_all = 0.0
-        def _eff_from_to(prev_eff, this_eff): return 1.0 - (1.0 - prev_eff) * (1.0 - this_eff)
-        order = {"preR":0,"preemR":1,"postR":2,"post_gram":3}
+        def _eff_from_to(prev_eff, this_eff):
+            return 1.0 - (1.0 - prev_eff) * (1.0 - this_eff)
+        order = {"preR": 0, "preemR": 1, "postR": 2, "post_gram": 3}
 
         for a in sorted(best["schedule"], key=lambda a: order.get(a["kind"], 9)):
             ini = pd.to_datetime(a["date"]).date()
             fin = (pd.to_datetime(a["date"]) + pd.Timedelta(days=int(a["days"]))).date()
             w = ((fechas_d_b >= ini) & (fechas_d_b < fin)).astype(float)
             if a["kind"] == "preR":
-                if _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN and a["eff"] > 0:
-                    _apply_eval(w, a["eff"], ["S1","S2"])
-                    eff_accum_pre = _eff_from_to(0.0, a["eff"]/100.0)
+                if _remaining_in_window_eval(w, ["S1", "S2"]) > EPS_REMAIN and a["eff"] > 0:
+                    _apply_eval(w, a["eff"], ["S1", "S2"])
+                    eff_accum_pre = _eff_from_to(0.0, a["eff"] / 100.0)
             elif a["kind"] == "preemR":
-                if eff_accum_pre < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN:
-                    _apply_eval(w, a["eff"], ["S1","S2"])
-                    eff_accum_pre2 = _eff_from_to(eff_accum_pre, a["eff"]/100.0)
+                if eff_accum_pre < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1", "S2"]) > EPS_REMAIN:
+                    _apply_eval(w, a["eff"], ["S1", "S2"])
+                    eff_accum_pre2 = _eff_from_to(eff_accum_pre, a["eff"] / 100.0)
                 else:
                     eff_accum_pre2 = eff_accum_pre
             elif a["kind"] == "postR":
-                if eff_accum_pre2 < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2","S3"]) > EPS_REMAIN:
-                    _apply_eval(w, a["eff"], ["S1","S2","S3"])
-                    eff_accum_all = _eff_from_to(eff_accum_pre2, a["eff"]/100.0)
+                if eff_accum_pre2 < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1", "S2", "S3"]) > EPS_REMAIN:
+                    _apply_eval(w, a["eff"], ["S1", "S2", "S3"])
+                    eff_accum_all = _eff_from_to(eff_accum_pre2, a["eff"] / 100.0)
                 else:
                     eff_accum_all = eff_accum_pre2
             elif a["kind"] == "post_gram":
                 # (la validez temporal ≥14d postR ya se chequeó en evaluate; aquí se asume agenda válida)
-                if eff_accum_all < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2","S3","S4"]) > EPS_REMAIN:
-                    _apply_eval(w, a["eff"], ["S1","S2","S3","S4"])
+                if eff_accum_all < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1", "S2", "S3", "S4"]) > EPS_REMAIN:
+                    _apply_eval(w, a["eff"], ["S1", "S2", "S3", "S4"])
 
-        total_ctrl_daily = (S1p*c1 + S2p*c2 + S3p*c3 + S4p*c4)
+        total_ctrl_daily = (S1p * c1 + S2p * c2 + S3p * c3 + S4p * c4)
         eps = 1e-12
         scale = np.where(total_ctrl_daily > eps, np.minimum(1.0, sup_cap_b / total_ctrl_daily), 0.0)
-        S1_ctrl_cap_b = S1p * c1 * scale; S2_ctrl_cap_b = S2p * c2 * scale
-        S3_ctrl_cap_b = S3p * c3 * scale; S4_ctrl_cap_b = S4p * c4 * scale
+        S1_ctrl_cap_b = S1p * c1 * scale
+        S2_ctrl_cap_b = S2p * c2 * scale
+        S3_ctrl_cap_b = S3p * c3 * scale
+        S4_ctrl_cap_b = S4p * c4 * scale
 
         # -------- Gráfico A: EMERREL + aportes semanales con/ sin control + Ciec (mejor)
-df_daily_b = pd.DataFrame({
-    "fecha": ts_b,
-    "pl_sin_ctrl_cap": np.where(mask_since_b, sup_cap_b, 0.0),
-    "pl_con_ctrl_cap": np.where(mask_since_b, S1_ctrl_cap_b + S2_ctrl_cap_b + S3_ctrl_cap_b + S4_ctrl_cap_b, 0.0),
-})
-df_week_b = df_daily_b.set_index("fecha").resample("W-MON").sum().reset_index()
+        df_daily_b = pd.DataFrame({
+            "fecha": ts_b,
+            "pl_sin_ctrl_cap": np.where(mask_since_b, sup_cap_b, 0.0),
+            "pl_con_ctrl_cap": np.where(mask_since_b, S1_ctrl_cap_b + S2_ctrl_cap_b + S3_ctrl_cap_b + S4_ctrl_cap_b, 0.0),
+        })
+        df_week_b = df_daily_b.set_index("fecha").resample("W-MON").sum().reset_index()
 
-fig_best1 = go.Figure()
-fig_best1.add_trace(go.Scatter(x=ts, y=df_plot["EMERREL"], mode="lines", name="EMERREL (cruda)"))
-fig_best1.add_trace(go.Scatter(
-    x=df_week_b["fecha"], y=df_week_b["pl_sin_ctrl_cap"],
-    name="Aporte semanal (sin control, cap)",
-    yaxis="y2", mode="lines+markers"
-))
-fig_best1.add_trace(go.Scatter(
-    x=df_week_b["fecha"], y=df_week_b["pl_con_ctrl_cap"],
-    name="Aporte semanal (con control, cap)",
-    yaxis="y2", mode="lines+markers", line=dict(dash="dot")
-))
+        fig_best1 = go.Figure()
+        fig_best1.add_trace(go.Scatter(x=ts, y=df_plot["EMERREL"], mode="lines", name="EMERREL (cruda)"))
+        fig_best1.add_trace(go.Scatter(
+            x=df_week_b["fecha"], y=df_week_b["pl_sin_ctrl_cap"],
+            name="Aporte semanal (sin control, cap)",
+            yaxis="y2", mode="lines+markers"
+        ))
+        fig_best1.add_trace(go.Scatter(
+            x=df_week_b["fecha"], y=df_week_b["pl_con_ctrl_cap"],
+            name="Aporte semanal (con control, cap)",
+            yaxis="y2", mode="lines+markers", line=dict(dash="dot")
+        ))
 
-# Ciec del mejor
-one_minus_best = compute_ciec_for(pd.to_datetime(best["sow"]).date())
-Ciec_best = 1.0 - one_minus_best
-fig_best1.add_trace(go.Scatter(x=ts_b, y=Ciec_best, mode="lines", name="Ciec (mejor)", yaxis="y3"))
+        # Ciec del mejor
+        one_minus_best = compute_ciec_for(pd.to_datetime(best["sow"]).date())
+        Ciec_best = 1.0 - one_minus_best
+        fig_best1.add_trace(go.Scatter(x=ts_b, y=Ciec_best, mode="lines", name="Ciec (mejor)", yaxis="y3"))
 
-fig_best1.update_layout(
-    margin=dict(l=10, r=10, t=40, b=10),
-    title="EMERREL y plantas·m²·semana · Mejor escenario",
-    xaxis_title="Tiempo",
-    yaxis_title="EMERREL",
-    yaxis2=dict(overlaying="y", side="right", title="pl·m²·sem⁻¹", range=[0, 100]),
-    yaxis3=dict(overlaying="y", side="right", title="Ciec", position=0.97, range=[0, 1])
-)
+        fig_best1.update_layout(
+            margin=dict(l=10, r=10, t=40, b=10),
+            title="EMERREL y plantas·m²·semana · Mejor escenario",
+            xaxis_title="Tiempo",
+            yaxis_title="EMERREL",
+            yaxis2=dict(overlaying="y", side="right", title="pl·m²·sem⁻¹", range=[0, 100]),
+            yaxis3=dict(overlaying="y", side="right", title="Ciec", position=0.97, range=[0, 1])
+        )
 
-# -------- Pintar franjas según tipo de intervención (colores distintos con misma atenuación)
-color_map = {
-    "preR":      "rgba(255,165,0,0.18)",   # naranja — presiembra residual
-    "preemR":    "rgba(46,204,113,0.18)",  # verde — preemergente residual
-    "postR":     "rgba(30,144,255,0.18)",  # azul — post-emergente residual
-    "post_gram": "rgba(255,99,132,0.18)",  # rosado — graminicida post
-}
+        # -------- Pintar franjas según tipo de intervención (colores distintos con misma atenuación)
+        color_map = {
+            "preR": "rgba(255,165,0,0.18)",    # naranja — presiembra residual
+            "preemR": "rgba(46,204,113,0.18)", # verde — preemergente residual
+            "postR": "rgba(30,144,255,0.18)",  # azul — post-emergente residual
+            "post_gram": "rgba(255,99,132,0.18)" # rosado — graminicida post
+        }
 
-for a in best["schedule"]:
-    x0 = pd.to_datetime(a["date"])
-    x1 = x0 + pd.Timedelta(days=int(a["days"]))
-    color = color_map.get(a["kind"], "rgba(128,128,128,0.18)")  # gris si no está definido
-    fig_best1.add_vrect(
-        x0=x0, x1=x1,
-        line_width=0,
-        fillcolor=color,
-        opacity=0.18
-    )
-    fig_best1.add_annotation(
-        x=x0 + (x1 - x0) / 2,
-        y=0.86, xref="x", yref="paper",
-        text=a["kind"],
-        showarrow=False,
-        bgcolor=color.replace("0.18", "0.85"),  # mismo color más opaco para el texto
-        font=dict(color="white")
-    )
+        for a in best["schedule"]:
+            x0 = pd.to_datetime(a["date"])
+            x1 = x0 + pd.Timedelta(days=int(a["days"]))
+            color = color_map.get(a["kind"], "rgba(128,128,128,0.18)")
+            fig_best1.add_vrect(
+                x0=x0, x1=x1,
+                line_width=0,
+                fillcolor=color,
+                opacity=0.18
+            )
+            fig_best1.add_annotation(
+                x=x0 + (x1 - x0) / 2,
+                y=0.86, xref="x", yref="paper",
+                text=a["kind"],
+                showarrow=False,
+                bgcolor=color.replace("0.18", "0.85"),
+                font=dict(color="white")
+            )
 
-# -------- Leyenda opcional para identificar colores (debajo del gráfico)
-legend_html = """
-<div style='font-size:14px; line-height:1.5em;'>
-<b>🟧 Presiembra residual (preR)</b> — naranja · 
-<b>🟩 Preemergente residual (preemR)</b> — verde · 
-<b>🟦 Post residual (postR)</b> — azul · 
-<b>🟥 Graminicida (post_gram)</b> — rosado
-</div>
-"""
-st.plotly_chart(fig_best1, use_container_width=True)
-st.markdown(legend_html, unsafe_allow_html=True)
-
-
-   
+        # -------- Leyenda de colores debajo del gráfico
+        legend_html = """
+        <div style='font-size:14px; line-height:1.5em;'>
+        <b>🟧 Presiembra residual (preR)</b> — naranja · 
+        <b>🟩 Preemergente residual (preemR)</b> — verde · 
+        <b>🟦 Post residual (postR)</b> — azul · 
+        <b>🟥 Graminicida (post_gram)</b> — rosado
+        </div>
+        """
+        st.plotly_chart(fig_best1, use_container_width=True)
+        st.markdown(legend_html, unsafe_allow_html=True)
 
         # -------- Gráfico B: Pérdida (%) vs x con marcadores x2 y x3
         X2_b = float(np.nansum(sup_cap_b[mask_since_b]))
-        X3_b = float(np.nansum((S1_ctrl_cap_b+S2_ctrl_cap_b+S3_ctrl_cap_b+S4_ctrl_cap_b)[mask_since_b]))
-        x_curve = np.linspace(0.0, MAX_PLANTS_CAP, 400); y_curve = _loss(x_curve)
+        X3_b = float(np.nansum((S1_ctrl_cap_b + S2_ctrl_cap_b + S3_ctrl_cap_b + S4_ctrl_cap_b)[mask_since_b]))
+        x_curve = np.linspace(0.0, MAX_PLANTS_CAP, 400)
+        y_curve = _loss(x_curve)
         fig2_best = go.Figure()
         fig2_best.add_trace(go.Scatter(x=x_curve, y=y_curve, mode="lines", name="Modelo pérdida % vs x"))
-        fig2_best.add_trace(go.Scatter(x=[X2_b], y=[_loss(X2_b)], mode="markers+text", name="x₂ (sin ctrl)", text=[f"x₂={X2_b:.1f}"], textposition="top center"))
-        fig2_best.add_trace(go.Scatter(x=[X3_b], y=[_loss(X3_b)], mode="markers+text", name="x₃ (con ctrl)", text=[f"x₃={X3_b:.1f}"], textposition="top right"))
-        fig2_best.update_layout(title="Figura — Pérdida de rendimiento (%) vs x", xaxis_title="x (pl·m²)", yaxis_title="Pérdida (%)")
+        fig2_best.add_trace(go.Scatter(x=[X2_b], y=[_loss(X2_b)], mode="markers+text", name="x₂ (sin ctrl)",
+                                       text=[f"x₂={X2_b:.1f}"], textposition="top center"))
+        fig2_best.add_trace(go.Scatter(x=[X3_b], y=[_loss(X3_b)], mode="markers+text", name="x₃ (con ctrl)",
+                                       text=[f"x₃={X3_b:.1f}"], textposition="top right"))
+        fig2_best.update_layout(title="Figura — Pérdida de rendimiento (%) vs x",
+                                xaxis_title="x (pl·m²)", yaxis_title="Pérdida (%)")
         st.plotly_chart(fig2_best, use_container_width=True)
 
         # -------- Gráfico C: Dinámica S1–S4 semanal (stacked) con control + cap
         df_states_week_b = (
-            pd.DataFrame({"fecha": ts_b, "S1": S1_ctrl_cap_b, "S2": S2_ctrl_cap_b, "S3": S3_ctrl_cap_b, "S4": S4_ctrl_cap_b})
-            .set_index("fecha").resample("W-MON").sum().reset_index()
+            pd.DataFrame({
+                "fecha": ts_b,
+                "S1": S1_ctrl_cap_b,
+                "S2": S2_ctrl_cap_b,
+                "S3": S3_ctrl_cap_b,
+                "S4": S4_ctrl_cap_b
+            })
+            .set_index("fecha")
+            .resample("W-MON")
+            .sum()
+            .reset_index()
         )
         st.subheader("Dinámica temporal de S1–S4 (con control + cap) — Mejor escenario")
         fig_states = go.Figure()
-        for col in ["S1","S2","S3","S4"]:
-            fig_states.add_trace(go.Scatter(x=df_states_week_b["fecha"], y=df_states_week_b[col], mode="lines", name=col, stackgroup="one"))
-        fig_states.update_layout(title="Aportes semanales por estado (con control + cap)", xaxis_title="Tiempo", yaxis_title="pl·m²·sem⁻¹")
+        for col in ["S1", "S2", "S3", "S4"]:
+            fig_states.add_trace(go.Scatter(
+                x=df_states_week_b["fecha"],
+                y=df_states_week_b[col],
+                mode="lines",
+                name=col,
+                stackgroup="one"
+            ))
+        fig_states.update_layout(
+            title="Aportes semanales por estado (con control + cap)",
+            xaxis_title="Tiempo",
+            yaxis_title="pl·m²·sem⁻¹"
+        )
         st.plotly_chart(fig_states, use_container_width=True)
 else:
     st.info("Aún no hay resultados de optimización para mostrar.")
-
-
-
-
-
 
 
 
