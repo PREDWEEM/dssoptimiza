@@ -797,8 +797,7 @@ auc_sup_ctrl = auc_time(ts_local, ctrl_equiv, mask=mask_obj_loc)
 A2_sup  = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP*(auc_sup/auc_cruda_loc))
 A2_ctrl = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP*(auc_sup_ctrl/auc_cruda_loc))
 
-return {
-        "sow": sd,
+return { "sow": sd,
         "loss_pct": float(loss3),
         "x2": X2loc_total,
         "x3": X3loc_total,
@@ -806,8 +805,7 @@ return {
         "x3_pcc": X3loc_pcc,
         "A2_sup": A2_sup,
         "A2_ctrl": A2_ctrl,
-        "schedule": schedule
-    }
+        "schedule": schedule}
 
 # ===================== CONSTRUCCIÓN DE ESCENARIOS =====================
 def build_all_scenarios():
