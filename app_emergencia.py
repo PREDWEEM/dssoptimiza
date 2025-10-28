@@ -957,6 +957,50 @@ for _name in ["compute_ciec_for", "recompute_for_sow"]:
         st.error(f"No se encontró helper requerido: `{_name}`. Revisá el orden/indentación.")
         st.stop()
 
+# ===============================================================
+# 🧩 Helpers de objetivo por ventana (DEBEN ir antes de evaluate)
+# ===============================================================
+
+def _in_window_md(d: dt.date, m1: int, d1: int, m2: int, d2: int) -> bool:
+    """
+    True si la fecha d (mes/día) cae dentro de [m1-d1, m2-d2] (inclusive).
+    Soporta ventanas que cruzan fin de año (p.ej., 15-nov → 10-feb).
+    """
+    md = (d.month, d.day)
+    start = (m1, d1)
+    end   = (m2, d2)
+    if start <= end:
+        return start <= md <= end
+    # Ventana que envuelve fin de año
+    return md >= start or md <= end
+
+def build_objective_weights(fechas_d: np.ndarray,
+                            use_window: bool,
+                            win_start: dt.date,
+                            win_end: dt.date,
+                            w_factor: float) -> np.ndarray:
+    """
+    Devuelve un vector de pesos (≥1) del mismo largo que fechas_d:
+      - 1.0 fuera de ventana
+      - w_factor dentro de ventana (si use_window y w_factor > 1)
+    """
+    n = len(fechas_d)
+    if (not use_window) or (w_factor is None) or (float(w_factor) <= 1.0) or n == 0:
+        return np.ones(n, dtype=float)
+
+    m1, d1 = int(win_start.month), int(win_start.day)
+    m2, d2 = int(win_end.month),   int(win_end.day)
+
+    mask = np.fromiter((_in_window_md(d, m1, d1, m2, d2) for d in fechas_d), count=n, dtype=bool)
+    w = np.ones(n, dtype=float)
+    w[mask] = float(w_factor)
+    return w
+
+# --- (Opcional) Shim de seguridad: si por algún motivo se reordena el código,
+#     garantizamos que existe un build_objective_weights básico.
+if "build_objective_weights" not in globals() or not callable(build_objective_weights):
+    def build_objective_weights(fechas_d, use_window, win_start, win_end, w_factor):
+        return np.ones(len(fechas_d), dtype=float)
 
 # ===============================================================
 # 🧩 BLOQUE 7D — EJECUCIÓN DEL OPTIMIZADOR
