@@ -1103,19 +1103,19 @@ if results:
         for a in best["schedule"]:
             x0 = pd.to_datetime(a["date"])
             x1 = x0 + pd.Timedelta(days=int(a["days"]))
-            color = color_map.get(a["kind"], "rgba(128,128,128,0.18)")
+            color = color_map.get(a["kind"], "rgba(128,128,128,0.30)")
             fig_best1.add_vrect(
                 x0=x0, x1=x1,
                 line_width=0,
                 fillcolor=color,
-                opacity=0.18
+                opacity=0.30
             )
             fig_best1.add_annotation(
                 x=x0 + (x1 - x0) / 2,
                 y=0.86, xref="x", yref="paper",
                 text=a["kind"],
                 showarrow=False,
-                bgcolor=color.replace("0.18", "0.85"),
+                bgcolor=color.replace("0.30", "0.85"),
                 font=dict(color="white")
             )
 
