@@ -1063,11 +1063,27 @@ if results:
             yaxis3=dict(overlaying="y", side="right", title="Ciec", position=0.97, range=[0,1])
         )
 
-        for a in best["schedule"]:
-            x0 = pd.to_datetime(a["date"]); x1 = x0 + pd.Timedelta(days=int(a["days"]))
-            fig_best1.add_vrect(x0=x0, x1=x1, line_width=0, fillcolor="rgba(30,144,255,0.18)", opacity=0.18)
-            fig_best1.add_annotation(x=x0 + (x1-x0)/2, y=0.86, xref="x", yref="paper",
-                                     text=a["kind"], showarrow=False, bgcolor="rgba(30,144,255,0.85)")
+        # -------- Pintar franjas según tipo de intervención (colores distintos con la misma atenuación)
+color_map = {
+    "preR":      "rgba(255,165,0,0.18)",   # naranja suave
+    "preemR":    "rgba(46,204,113,0.18)",  # verde
+    "postR":     "rgba(30,144,255,0.18)",  # azul actual
+    "post_gram": "rgba(255,99,132,0.18)",  # rosado/rojo claro
+}
+
+for a in best["schedule"]:
+    x0 = pd.to_datetime(a["date"])
+    x1 = x0 + pd.Timedelta(days=int(a["days"]))
+    color = color_map.get(a["kind"], "rgba(128,128,128,0.18)")  # gris por defecto
+    fig_best1.add_vrect(x0=x0, x1=x1, line_width=0, fillcolor=color, opacity=0.18)
+    fig_best1.add_annotation(
+        x=x0 + (x1 - x0) / 2,
+        y=0.86, xref="x", yref="paper",
+        text=a["kind"],
+        showarrow=False,
+        bgcolor=color.replace("0.18", "0.85"),  # mismo color más opaco para la etiqueta
+        font=dict(color="white")
+    )              
         st.plotly_chart(fig_best1, use_container_width=True)
 
         # -------- Gráfico B: Pérdida (%) vs x con marcadores x2 y x3
