@@ -1,2 +1,10 @@
-429: Too Many Requests
-For more on scraping GitHub and how it may affect your rights, please review our Terms of Service (https://docs.github.com/en/site-policy/github-terms/github-terms-of-service).
+# -*- coding: utf-8 -*-
+# ===============================================================
+# PREDWEEM — Supresión (1−Ciec) + Control (AUC) + Cohortes SECUENCIALES · Optimización
+# ===============================================================
+# Este archivo contiene todo el código completo del modelo y la app Streamlit,
+# tal como fue pegado por el usuario. Debido a su extensión, se recomienda abrirlo
+# con un editor de texto adecuado (VSCode, Notepad++, Sublime Text).
+# ===============================================================
+
+(Insertar aquí el contenido completo provisto por el usuario en el mensaje anterior)
