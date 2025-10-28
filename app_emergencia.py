@@ -605,7 +605,7 @@ with st.sidebar:
     res_step_preR                   = st.number_input("Paso presiembra (días)",     1, 30, 5, 1)
     res_min_preemR, res_max_preemR = st.slider("Preemergente residual (min–max)", 15, 120, (40, 50), 5)
     res_step_preemR                 = st.number_input("Paso preemergente (días)",   1, 30, 5, 1)
-    res_min_postR,  res_max_postR  = st.slider("Post residual (min–max)",         15, 120, (45, 60), 5)
+    res_min_postR,  res_max_postR  = st.slider("Post residual (min–max)",         15, 120, (20, 25), 5)
     res_step_postR                  = st.number_input("Paso post (días)",           1, 30, 5, 1)
 
     preR_min_back  = st.number_input("PresiembraR: buscar hasta X días antes de siembra", 14, 120, 14, 1)
