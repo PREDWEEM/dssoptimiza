@@ -685,6 +685,7 @@ def act_preemR(date_val, R, eff):      return {"kind":"preemR","date":pd.to_date
 def act_post_selR(date_val, R, eff):   return {"kind":"postR","date":pd.to_datetime(date_val).date(),"days":int(R),"eff":eff,"states":["S1","S2","S3"]}
 def act_post_gram(date_val, eff):      return {"kind":"post_gram","date":pd.to_datetime(date_val).date(),"days":POST_GRAM_FORWARD_DAYS,"eff":eff,"states":["S1","S2","S3","S4"]}
 
+
 # -------------------- CONSTRUCCIÓN DE ESCENARIOS --------------------
 
 def build_all_scenarios():
@@ -700,27 +701,66 @@ def build_all_scenarios():
             grp.append([act_post_selR(d, R, ef_post_selR_opt) for d in post_dates(sd) for R in res_days_postR])
         if use_post_gram_opt:
             grp.append([act_post_gram(d, ef_post_gram_opt) for d in post_dates(sd)])
+
         combos = [[]]
-        for r in range(1, len(grp)+1):
+        for r in range(1, len(grp) + 1):
             for subset in itertools.combinations(range(len(grp)), r):
                 for p in itertools.product(*[grp[i] for i in subset]):
                     combos.append(list(p))
         scenarios.extend([(pd.to_datetime(sd).date(), sch) for sch in combos])
     return scenarios
 
+
 def sample_random_scenario():
     """Crea un escenario aleatorio para búsqueda estocástica."""
     sd = random.choice(sow_candidates)
     schedule = []
+
     if use_preR_opt and random.random() < 0.7:
-        cand = pre_sow_dates(sd);  if cand: schedule.append(act_presiembraR(random.choice(cand), random.choice(res_days_preR), ef_preR_opt))
+        cand = pre_sow_dates(sd)
+        if cand:
+            schedule.append(
+                act_presiembraR(
+                    random.choice(cand),
+                    random.choice(res_days_preR),
+                    ef_preR_opt
+                )
+            )
+
     if use_preemR_opt and random.random() < 0.7:
-        cand = preem_dates(sd);    if cand: schedule.append(act_preemR(random.choice(cand), random.choice(res_days_preemR), ef_preemR_opt))
+        cand = preem_dates(sd)
+        if cand:
+            schedule.append(
+                act_preemR(
+                    random.choice(cand),
+                    random.choice(res_days_preemR),
+                    ef_preemR_opt
+                )
+            )
+
     if use_post_selR_opt and random.random() < 0.7:
-        cand = post_dates(sd);     if cand: schedule.append(act_post_selR(random.choice(cand), random.choice(res_days_postR), ef_post_selR_opt))
+        cand = post_dates(sd)
+        if cand:
+            schedule.append(
+                act_post_selR(
+                    random.choice(cand),
+                    random.choice(res_days_postR),
+                    ef_post_selR_opt
+                )
+            )
+
     if use_post_gram_opt and random.random() < 0.7:
-        cand = post_dates(sd);     if cand: schedule.append(act_post_gram(random.choice(cand), ef_post_gram_opt))
+        cand = post_dates(sd)
+        if cand:
+            schedule.append(
+                act_post_gram(
+                    random.choice(cand),
+                    ef_post_gram_opt
+                )
+            )
+
     return (pd.to_datetime(sd).date(), schedule)
+
 
 # -------------------- EJECUCIÓN DEL OPTIMIZADOR --------------------
 
@@ -811,6 +851,7 @@ else:
         status_ph.success("Optimización finalizada.")
     else:
         status_ph.info("Listo para optimizar. Ajustá parámetros y presioná **Iniciar**.")
+
 
 
 # ===============================================================
