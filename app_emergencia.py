@@ -797,7 +797,7 @@ auc_sup_ctrl = auc_time(ts_local, ctrl_equiv, mask=mask_obj_loc)
 A2_sup  = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP*(auc_sup/auc_cruda_loc))
 A2_ctrl = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP*(auc_sup_ctrl/auc_cruda_loc))
 
-    return {
+  return {
         "sow": sd,
         "loss_pct": float(loss3),
         "x2": X2loc_total,
