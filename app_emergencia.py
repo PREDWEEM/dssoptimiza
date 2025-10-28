@@ -770,6 +770,47 @@ def evaluate(sd: dt.date, schedule: list):
 
     order = {"preR": 0, "preemR": 1, "postR": 2, "post_gram": 3}
 
+    # ===============================================================
+# 🧩 Helpers de objetivo por ventana (DEBE ir antes de evaluate)
+# ===============================================================
+
+def _in_window_md(d: dt.date, m1: int, d1: int, m2: int, d2: int) -> bool:
+    """
+    True si la fecha d (mes/día) cae dentro [m1-d1, m2-d2].
+    Soporta ventanas que envuelven fin de año (p.ej., 15-nov → 10-feb).
+    """
+    md = (d.month, d.day)
+    start = (m1, d1)
+    end   = (m2, d2)
+    if start <= end:
+        return start <= md <= end
+    # Ventana que envuelve fin de año
+    return md >= start or md <= end
+
+def build_objective_weights(fechas_d: np.ndarray,
+                            use_window: bool,
+                            win_start: dt.date,
+                            win_end: dt.date,
+                            w_factor: float) -> np.ndarray:
+    """
+    Vector de pesos (≥1): 1.0 fuera de ventana; w_factor dentro de ventana
+    si use_window y w_factor>1.
+    """
+    if (not use_window) or (w_factor <= 1.0):
+        return np.ones(len(fechas_d), dtype=float)
+
+    m1, d1 = win_start.month, win_start.day
+    m2, d2 = win_end.month,   win_end.day
+
+    mask = np.array([_in_window_md(d, m1, d1, m2, d2) for d in fechas_d], dtype=bool)
+    w = np.ones(len(fechas_d), dtype=float)
+    w[mask] = float(w_factor)
+    return w
+
+    
+    
+    
+    
     # ---- Aplicación jerárquica de la agenda (ventanas como máscaras de fechas)
     for a in sorted(schedule, key=lambda a: order.get(a["kind"], 9)):
         ini = pd.to_datetime(a["date"]).date()
