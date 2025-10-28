@@ -35,7 +35,7 @@ st.title(APP_TITLE)
 
 # ------------------ CONSTANTES ------------------
 NR_DAYS_DEFAULT = 10
-POST_GRAM_FORWARD_DAYS = 11
+POST_GRAM_FORWARD_DAYS = 10
 PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW  = 14
 PREEM_R_MAX_AFTER_SOW_DAYS        = 10
 EPS_REMAIN = 1e-9
@@ -149,8 +149,8 @@ with st.sidebar:
     sow_date = st.date_input("Fecha de siembra", value=sow_min, min_value=sow_min, max_value=sow_max)
     mode_canopy = st.selectbox("Canopia", ["Cobertura dinámica (%)", "LAI dinámico"], index=0)
     t_lag   = st.number_input("Días a emergencia del cultivo", 0, 60, 7)
-    t_close = st.number_input("Días a cierre de entresurco", 10, 120, 45)
-    cov_max = st.number_input("Cobertura máxima (%)", 10, 100, 85)
+    t_close = st.number_input("Días a cierre de entresurco", 10, 120, 80)
+    cov_max = st.number_input("Cobertura máxima (%)", 10, 100, 80)
     lai_max = st.number_input("LAI máximo", 0.0, 8.0, 3.0)
     k_beer  = st.number_input("k (Beer–Lambert)", 0.1, 1.2, 0.6)
     use_ciec = st.checkbox("Incluir Ciec", True)
