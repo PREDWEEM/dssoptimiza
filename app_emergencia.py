@@ -745,7 +745,7 @@ def recompute_for_sow(sow_d: dt.date, T12: int, T23: int, T34: int):
     if auc_cruda_loc <= 0: return None
     factor_area = MAX_PLANTS_CAP / auc_cruda_loc
 
-    # Aportes por estado ponderados por (1−Ciec) y FC_S
+        # Aportes por estado ponderados por (1−Ciec) y FC_S
     S1_pl = np.where(mask_since, S1 * one_minus * 0.1 * factor_area, 0.0)
     S2_pl = np.where(mask_since, S2 * one_minus * 0.3 * factor_area, 0.0)
     S3_pl = np.where(mask_since, S3 * one_minus * 0.6 * factor_area, 0.0)
@@ -755,7 +755,7 @@ def recompute_for_sow(sow_d: dt.date, T12: int, T23: int, T34: int):
     base_pl_daily_cap = cap_cumulative(base_pl_daily, MAX_PLANTS_CAP, mask_since.to_numpy())
     sup_cap = np.minimum(S1_pl + S2_pl + S3_pl + S4_pl, base_pl_daily_cap)
 
-      return {
+    return {
         "mask_since": mask_since.to_numpy(),
         "factor_area": factor_area,
         "auc_cruda": auc_cruda_loc,
@@ -763,7 +763,7 @@ def recompute_for_sow(sow_d: dt.date, T12: int, T23: int, T34: int):
         "sup_cap": sup_cap,
         "ts": ts,
         "fechas_d": ts.dt.date.values
-            }
+    }
 
 # ===================== ACCIONES (con reglas) =====================
 def act_presiembraR(date_val, R, eff): return {"kind":"preR",   "date": pd.to_datetime(date_val).date(), "days": int(R), "eff": eff, "states": ["S1","S2"]}
