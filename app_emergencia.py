@@ -906,6 +906,15 @@ else:
     else:
         status_ph.info("Listo para optimizar. Ajustá parámetros y presioná **Iniciar**.")
 
+# Inicialización segura del estado de la app
+for key, default in {
+    "opt_running": False,
+    "opt_stop": False
+}.items():
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+
 # ===============================================================
 # 🧩 BLOQUE 7 — OPTIMIZACIÓN (Grid / Aleatoria / Recocido Simulado)
 # ===============================================================
