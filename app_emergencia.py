@@ -772,32 +772,32 @@ def act_post_selR(date_val, R, eff):  return {"kind":"postR",   "date": pd.to_da
 def act_post_gram(date_val, eff):     return {"kind":"post_gram","date": pd.to_datetime(date_val).date(), "days": POST_GRAM_FORWARD_DAYS, "eff": eff, "states": ["S1","S2","S3","S4"]}
 
 # ===================== EVALUACIÓN DE UN CRONOGRAMA =====================
-    # Ventanas
-    mask_obj_loc = mask_between(ts_local, sd, crit_end)          # siembra→10-Nov del año de sd
-    mask_pcc_loc = mask_between(ts_local, crit_start, crit_end)  # 10-Oct→10-Nov
+# Ventanas
+mask_obj_loc = mask_between(ts_local, sd, crit_end)          # siembra→10-Nov del año de sd
+mask_pcc_loc = mask_between(ts_local, crit_start, crit_end)  # 10-Oct→10-Nov
 
-    tot_ctrl = S1_pl*c1 + S2_pl*c2 + S3_pl*c3 + S4_pl*c4
-    plantas_ctrl_cap = np.minimum(tot_ctrl, sup_cap)
+tot_ctrl = S1_pl*c1 + S2_pl*c2 + S3_pl*c3 + S4_pl*c4
+plantas_ctrl_cap = np.minimum(tot_ctrl, sup_cap)
 
-    # Métricas en la ventana objetivo
-    X2loc_total = float(np.nansum(sup_cap[mask_obj_loc]))
-    X3loc_total = float(np.nansum(plantas_ctrl_cap[mask_obj_loc]))
-    X3loc_pcc   = float(np.nansum(plantas_ctrl_cap[mask_pcc_loc]))
-    X3loc_nopcc = X3loc_total - X3loc_pcc
-    X3loc_eff   = PCC_WEIGHT * X3loc_pcc + X3loc_nopcc
+# Métricas en la ventana objetivo
+X2loc_total = float(np.nansum(sup_cap[mask_obj_loc]))
+X3loc_total = float(np.nansum(plantas_ctrl_cap[mask_obj_loc]))
+X3loc_pcc   = float(np.nansum(plantas_ctrl_cap[mask_pcc_loc]))
+X3loc_nopcc = X3loc_total - X3loc_pcc
+X3loc_eff   = PCC_WEIGHT * X3loc_pcc + X3loc_nopcc
 
-    # Pérdida: se minimiza sobre x3_efectivo (prioriza limpieza PCC)
-    loss3 = _loss(X3loc_eff)
+# Pérdida: se minimiza sobre x3_efectivo (prioriza limpieza PCC)
+loss3 = _loss(X3loc_eff)
 
-    # A2 en ventana objetivo
-    sup_equiv  = np.divide(sup_cap,          factor_area, out=np.zeros_like(sup_cap),          where=(factor_area>0))
-    ctrl_equiv = np.divide(plantas_ctrl_cap, factor_area, out=np.zeros_like(plantas_ctrl_cap), where=(factor_area>0))
-    auc_sup      = auc_time(ts_local, sup_equiv,  mask=mask_obj_loc)
-    auc_sup_ctrl = auc_time(ts_local, ctrl_equiv, mask=mask_obj_loc)
-    A2_sup  = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP*(auc_sup/auc_cruda_loc))
-    A2_ctrl = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP*(auc_sup_ctrl/auc_cruda_loc))
+# A2 en ventana objetivo
+sup_equiv  = np.divide(sup_cap,          factor_area, out=np.zeros_like(sup_cap),          where=(factor_area>0))
+ctrl_equiv = np.divide(plantas_ctrl_cap, factor_area, out=np.zeros_like(plantas_ctrl_cap), where=(factor_area>0))
+auc_sup      = auc_time(ts_local, sup_equiv,  mask=mask_obj_loc)
+auc_sup_ctrl = auc_time(ts_local, ctrl_equiv, mask=mask_obj_loc)
+A2_sup  = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP*(auc_sup/auc_cruda_loc))
+A2_ctrl = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP*(auc_sup_ctrl/auc_cruda_loc))
 
-    return {
+return {
         "sow": sd,
         "loss_pct": float(loss3),
         "x2": X2loc_total,
