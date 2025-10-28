@@ -1038,53 +1038,81 @@ if results:
         S3_ctrl_cap_b = S3p * c3 * scale; S4_ctrl_cap_b = S4p * c4 * scale
 
         # -------- Gráfico A: EMERREL + aportes semanales con/ sin control + Ciec (mejor)
-        df_daily_b = pd.DataFrame({
-            "fecha": ts_b,
-            "pl_sin_ctrl_cap": np.where(mask_since_b, sup_cap_b, 0.0),
-            "pl_con_ctrl_cap": np.where(mask_since_b, S1_ctrl_cap_b+S2_ctrl_cap_b+S3_ctrl_cap_b+S4_ctrl_cap_b, 0.0),
-        })
-        df_week_b = df_daily_b.set_index("fecha").resample("W-MON").sum().reset_index()
+df_daily_b = pd.DataFrame({
+    "fecha": ts_b,
+    "pl_sin_ctrl_cap": np.where(mask_since_b, sup_cap_b, 0.0),
+    "pl_con_ctrl_cap": np.where(mask_since_b, S1_ctrl_cap_b + S2_ctrl_cap_b + S3_ctrl_cap_b + S4_ctrl_cap_b, 0.0),
+})
+df_week_b = df_daily_b.set_index("fecha").resample("W-MON").sum().reset_index()
 
-        fig_best1 = go.Figure()
-        fig_best1.add_trace(go.Scatter(x=ts, y=df_plot["EMERREL"], mode="lines", name="EMERREL (cruda)"))
-        fig_best1.add_trace(go.Scatter(x=df_week_b["fecha"], y=df_week_b["pl_sin_ctrl_cap"], name="Aporte semanal (sin control, cap)", yaxis="y2", mode="lines+markers"))
-        fig_best1.add_trace(go.Scatter(x=df_week_b["fecha"], y=df_week_b["pl_con_ctrl_cap"], name="Aporte semanal (con control, cap)", yaxis="y2", mode="lines+markers", line=dict(dash="dot")))
+fig_best1 = go.Figure()
+fig_best1.add_trace(go.Scatter(x=ts, y=df_plot["EMERREL"], mode="lines", name="EMERREL (cruda)"))
+fig_best1.add_trace(go.Scatter(
+    x=df_week_b["fecha"], y=df_week_b["pl_sin_ctrl_cap"],
+    name="Aporte semanal (sin control, cap)",
+    yaxis="y2", mode="lines+markers"
+))
+fig_best1.add_trace(go.Scatter(
+    x=df_week_b["fecha"], y=df_week_b["pl_con_ctrl_cap"],
+    name="Aporte semanal (con control, cap)",
+    yaxis="y2", mode="lines+markers", line=dict(dash="dot")
+))
 
-        # Ciec del mejor
-        one_minus_best = compute_ciec_for(pd.to_datetime(best["sow"]).date())
-        Ciec_best = 1.0 - one_minus_best
-        fig_best1.add_trace(go.Scatter(x=ts_b, y=Ciec_best, mode="lines", name="Ciec (mejor)", yaxis="y3"))
+# Ciec del mejor
+one_minus_best = compute_ciec_for(pd.to_datetime(best["sow"]).date())
+Ciec_best = 1.0 - one_minus_best
+fig_best1.add_trace(go.Scatter(x=ts_b, y=Ciec_best, mode="lines", name="Ciec (mejor)", yaxis="y3"))
 
-        fig_best1.update_layout(
-            margin=dict(l=10, r=10, t=40, b=10),
-            title="EMERREL y plantas·m²·semana · Mejor escenario",
-            xaxis_title="Tiempo", yaxis_title="EMERREL",
-            yaxis2=dict(overlaying="y", side="right", title="pl·m²·sem⁻¹", range=[0,100]),
-            yaxis3=dict(overlaying="y", side="right", title="Ciec", position=0.97, range=[0,1])
-        )
+fig_best1.update_layout(
+    margin=dict(l=10, r=10, t=40, b=10),
+    title="EMERREL y plantas·m²·semana · Mejor escenario",
+    xaxis_title="Tiempo",
+    yaxis_title="EMERREL",
+    yaxis2=dict(overlaying="y", side="right", title="pl·m²·sem⁻¹", range=[0, 100]),
+    yaxis3=dict(overlaying="y", side="right", title="Ciec", position=0.97, range=[0, 1])
+)
 
-        # -------- Pintar franjas según tipo de intervención (colores distintos con la misma atenuación)
+# -------- Pintar franjas según tipo de intervención (colores distintos con misma atenuación)
 color_map = {
-    "preR":      "rgba(255,165,0,0.18)",   # naranja suave
-    "preemR":    "rgba(46,204,113,0.18)",  # verde
-    "postR":     "rgba(30,144,255,0.18)",  # azul actual
-    "post_gram": "rgba(255,99,132,0.18)",  # rosado/rojo claro
+    "preR":      "rgba(255,165,0,0.18)",   # naranja — presiembra residual
+    "preemR":    "rgba(46,204,113,0.18)",  # verde — preemergente residual
+    "postR":     "rgba(30,144,255,0.18)",  # azul — post-emergente residual
+    "post_gram": "rgba(255,99,132,0.18)",  # rosado — graminicida post
 }
 
 for a in best["schedule"]:
     x0 = pd.to_datetime(a["date"])
     x1 = x0 + pd.Timedelta(days=int(a["days"]))
-    color = color_map.get(a["kind"], "rgba(128,128,128,0.18)")  # gris por defecto
-    fig_best1.add_vrect(x0=x0, x1=x1, line_width=0, fillcolor=color, opacity=0.18)
+    color = color_map.get(a["kind"], "rgba(128,128,128,0.18)")  # gris si no está definido
+    fig_best1.add_vrect(
+        x0=x0, x1=x1,
+        line_width=0,
+        fillcolor=color,
+        opacity=0.18
+    )
     fig_best1.add_annotation(
         x=x0 + (x1 - x0) / 2,
         y=0.86, xref="x", yref="paper",
         text=a["kind"],
         showarrow=False,
-        bgcolor=color.replace("0.18", "0.85"),  # mismo color más opaco para la etiqueta
+        bgcolor=color.replace("0.18", "0.85"),  # mismo color más opaco para el texto
         font=dict(color="white")
-    )              
-        st.plotly_chart(fig_best1, use_container_width=True)
+    )
+
+# -------- Leyenda opcional para identificar colores (debajo del gráfico)
+legend_html = """
+<div style='font-size:14px; line-height:1.5em;'>
+<b>🟧 Presiembra residual (preR)</b> — naranja · 
+<b>🟩 Preemergente residual (preemR)</b> — verde · 
+<b>🟦 Post residual (postR)</b> — azul · 
+<b>🟥 Graminicida (post_gram)</b> — rosado
+</div>
+"""
+st.plotly_chart(fig_best1, use_container_width=True)
+st.markdown(legend_html, unsafe_allow_html=True)
+
+
+   
 
         # -------- Gráfico B: Pérdida (%) vs x con marcadores x2 y x3
         X2_b = float(np.nansum(sup_cap_b[mask_since_b]))
