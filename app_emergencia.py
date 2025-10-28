@@ -612,7 +612,7 @@ with st.sidebar:
     preR_step_days = st.number_input("Paso fechas PRESIEMBRA (días)", 1, 30, 2, 1)
     preem_step_days = st.number_input("Paso fechas PREEMERGENTE (días)", 1, 10, 2, 1)
     post_days_fw   = st.number_input("Post: días después de siembra (máximo)", 20, 180, 120, 1)
-    post_step_days = st.number_input("Paso fechas POST (días)", 1, 30, 2, 1)
+    post_step_days = st.number_input("Paso fechas POST (días)", 1, 30, 4, 1)
 
     optimizer  = st.selectbox("Optimizador", ["Grid (combinatorio)", "Búsqueda aleatoria", "Recocido simulado"], index=0)
     max_evals  = st.number_input("Máx. evaluaciones", 100, 100000, 4000, 100)
