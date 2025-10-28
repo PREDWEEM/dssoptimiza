@@ -179,6 +179,26 @@ else:
     Ciec=np.zeros_like(LAI)
 one_minus_Ciec=1-Ciec
 
+# ================== VENTANAS TEMPORALES DEL OBJETIVO ==================
+# • Ventana de cómputo oficial de densidad efectiva: [siembra, 10-Nov]
+# • Ventana crítica priorizada (PCC): [10-Oct, 10-Nov]
+year_ref = int(pd.Timestamp(sow_date).year)
+crit_start = dt.date(year_ref, 10, 10)
+crit_end   = dt.date(year_ref, 11, 10)   # inclusive en lógica discreta
+
+# Si la serie abarca varios años, usamos el año de siembra como referencia de PCC
+mask_between = lambda dates, d0, d1: ((dates >= pd.to_datetime(d0)) & (dates <= pd.to_datetime(d1)))
+
+ts_date = ts.dt.date
+mask_obj = mask_between(ts, sow_date, crit_end)                        # siembra → 10-Nov
+mask_pcc = mask_between(ts, crit_start, crit_end)                      # 10-Oct → 10-Nov
+mask_post_sow = (ts_date >= sow_date)                                  # siembra → fin de serie (para gráficos)
+
+# ===== Peso del PCC en la función objetivo
+with st.sidebar:
+    st.header("Prioridad del período crítico")
+    PCC_WEIGHT = st.slider("Peso relativo 10-Oct→10-Nov", 1.0, 10.0, 3.0, 0.5)
+
 # ------------------ PARÁMETROS DE ESCENARIO ------------------
 with st.sidebar:
     st.header("Escenario de infestación")
@@ -249,14 +269,17 @@ S1 *= scale; S2 *= scale; S3 *= scale; S4 *= scale
 # Coeficientes relativos de aporte por estado (efecto competitivo / sombreo)
 FC_S = {"S1": 0.1, "S2": 0.3, "S3": 0.6, "S4": 1.0}
 
-# ------------------ ESCALADO A PLANTAS (AUC→CAP) ------------------
-auc_cruda = auc_time(ts, df_plot["EMERREL"].to_numpy(float), mask=(ts.dt.date >= sow_date))
+# ------------------ ESCALADO A PLANTAS (AUC→CAP)  — restricto a [siembra, 10-Nov] ------------------
+auc_cruda = auc_time(ts, df_plot["EMERREL"].to_numpy(float), mask=mask_obj)
 if auc_cruda > 0:
     factor_area_to_plants = MAX_PLANTS_CAP / auc_cruda
-    conv_caption = f"AUC(EMERREL cruda desde siembra) = {auc_cruda:.4f} → {int(MAX_PLANTS_CAP)} pl·m² (factor={factor_area_to_plants:.4f})"
+    conv_caption = (
+        f"AUC(EMERREL cruda desde siembra→10-Nov) = {auc_cruda:.4f} → "
+        f"{int(MAX_PLANTS_CAP)} pl·m² (factor={factor_area_to_plants:.4f})"
+    )
 else:
     factor_area_to_plants = None
-    conv_caption = "No se pudo escalar por área (AUC de EMERREL cruda = 0)."
+    conv_caption = "No se pudo escalar por área (AUC de EMERREL cruda en [siembra→10-Nov] = 0)."
 
 # ------------------ MANEJO (UI MANUAL) ------------------
 sched_rows = []
@@ -518,23 +541,31 @@ sem_x = df_week_cap["fecha"]
 plm2sem_sin_ctrl_cap = df_week_cap["pl_sin_ctrl_cap"].to_numpy()
 plm2sem_con_ctrl_cap = df_week_cap["pl_con_ctrl_cap"].to_numpy()
 
-# ------------------ A2 por AUC ------------------
+# ------------------ A2 por AUC (en [siembra, 10-Nov]) ------------------
 if factor_area_to_plants is not None and auc_cruda > 0:
     sup_equiv  = np.divide(plantas_supresion_cap,     factor_area_to_plants, out=np.zeros_like(plantas_supresion_cap),     where=(factor_area_to_plants>0))
     supc_equiv = np.divide(plantas_supresion_ctrl_cap, factor_area_to_plants, out=np.zeros_like(plantas_supresion_ctrl_cap), where=(factor_area_to_plants>0))
-    auc_sup      = auc_time(ts, sup_equiv,  mask=(ts.dt.date >= sow_date))
-    auc_sup_ctrl = auc_time(ts, supc_equiv, mask=(ts.dt.date >= sow_date))
+    auc_sup      = auc_time(ts, sup_equiv,  mask=mask_obj)
+    auc_sup_ctrl = auc_time(ts, supc_equiv, mask=mask_obj)
     A2_sup_final  = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP * (auc_sup      / auc_cruda))
     A2_ctrl_final = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP * (auc_sup_ctrl / auc_cruda))
 else:
     A2_sup_final = A2_ctrl_final = float("nan")
 
-# ------------------ x y pérdida ------------------
+# ------------------ x y pérdida (en [siembra, 10-Nov]) + foco PCC ------------------
 if factor_area_to_plants is not None:
-    X2 = float(np.nansum(plantas_supresion_cap[(ts.dt.date >= sow_date).to_numpy()]))
-    X3 = float(np.nansum(plantas_supresion_ctrl_cap[(ts.dt.date >= sow_date).to_numpy()]))
+    # Sumas en ventana objetivo
+    X2_total = float(np.nansum(plantas_supresion_cap[mask_obj]))
+    X3_total = float(np.nansum(plantas_supresion_ctrl_cap[mask_obj]))
+    # Descomposición por PCC
+    X3_pcc   = float(np.nansum(plantas_supresion_ctrl_cap[mask_pcc]))
+    X3_nopcc = X3_total - X3_pcc
+    # x efectivo para pérdida: prioriza PCC
+    X3_eff = PCC_WEIGHT * X3_pcc + X3_nopcc
+    X2_eff = X2_total  # (el “sin control” se reporta sin ponderar)
 else:
-    X2 = X3 = float("nan")
+    X2_total = X3_total = X3_pcc = X3_nopcc = X3_eff = X2_eff = float("nan")
+
 
 # ------------------ GRÁFICOS ------------------
 st.subheader(f"📊 Gráfico 1: EMERREL + aportes (cap A2={int(MAX_PLANTS_CAP)}) — Serie semanal (W-MON)")
@@ -741,97 +772,42 @@ def act_post_selR(date_val, R, eff):  return {"kind":"postR",   "date": pd.to_da
 def act_post_gram(date_val, eff):     return {"kind":"post_gram","date": pd.to_datetime(date_val).date(), "days": POST_GRAM_FORWARD_DAYS, "eff": eff, "states": ["S1","S2","S3","S4"]}
 
 # ===================== EVALUACIÓN DE UN CRONOGRAMA =====================
-def evaluate(sd: dt.date, schedule: list):
-    sow = pd.to_datetime(sd)
-    sow_plus_20 = sow + pd.Timedelta(days=20)
-
-    # Reglas duras de fechas (incluye gram ≥14 días postR)
-    for a in schedule:
-        d = pd.to_datetime(a["date"])
-        if a["kind"] == "postR"  and d < sow_plus_20: return None
-        if a["kind"] == "preR"   and d > (sow - pd.Timedelta(days=PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW)): return None
-        if a["kind"] == "preemR" and (d < sow or d > (sow + pd.Timedelta(days=PREEM_R_MAX_AFTER_SOW_DAYS))): return None
-        if a["kind"] == "post_gram":
-            postR_dates = [pd.to_datetime(x["date"]) for x in schedule if x["kind"] == "postR"]
-            if postR_dates:
-                min_gap = min((d - pr).days for pr in postR_dates)
-                if min_gap < 14:
-                    return None
-
-    env = recompute_for_sow(sd, int(T12), int(T23), int(T34))
-    if env is None: return None
-    mask_since = env["mask_since"]; factor_area = env["factor_area"]
-    S1_pl, S2_pl, S3_pl, S4_pl = env["S_pl"]; sup_cap = env["sup_cap"]
-    ts_local, fechas_d_local = env["ts"], env["fechas_d"]
-
-    # Controles (1 = sin control)
-    c1 = np.ones_like(fechas_d_local, float)
-    c2 = np.ones_like(fechas_d_local, float)
-    c3 = np.ones_like(fechas_d_local, float)
-    c4 = np.ones_like(fechas_d_local, float)
-
-    def _remaining_in_window_eval(w, states):
-        rem = 0.0
-        if "S1" in states: rem += np.sum(S1_pl * c1 * w)
-        if "S2" in states: rem += np.sum(S2_pl * c2 * w)
-        if "S3" in states: rem += np.sum(S3_pl * c3 * w)
-        if "S4" in states: rem += np.sum(S4_pl * c4 * w)
-        return float(rem)
-
-    def _apply_eval(w, eff, states):
-        if eff <= 0: return False
-        reduc = np.clip(1.0 - (eff/100.0)*np.clip(w,0.0,1.0), 0.0, 1.0)
-        if "S1" in states: np.multiply(c1, reduc, out=c1)
-        if "S2" in states: np.multiply(c2, reduc, out=c2)
-        if "S3" in states: np.multiply(c3, reduc, out=c3)
-        if "S4" in states: np.multiply(c4, reduc, out=c4)
-        return True
-
-    eff_accum_pre = eff_accum_pre2 = eff_accum_all = 0.0
-    def _eff_from_to(prev_eff, this_eff): return 1.0 - (1.0 - prev_eff) * (1.0 - this_eff)
-    order = {"preR":0,"preemR":1,"postR":2,"post_gram":3}
-
-    for a in sorted(schedule, key=lambda a: order.get(a["kind"], 9)):
-        d0, d1 = a["date"], a["date"] + pd.Timedelta(days=int(a["days"]))
-        w = ((fechas_d_local >= d0) & (fechas_d_local < d1)).astype(float)
-        if a["kind"] == "preR":
-            if _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN and a["eff"] > 0:
-                _apply_eval(w, a["eff"], ["S1","S2"])
-                eff_accum_pre = _eff_from_to(0.0, a["eff"]/100.0)
-        elif a["kind"] == "preemR":
-            if eff_accum_pre < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN:
-                _apply_eval(w, a["eff"], ["S1","S2"])
-                eff_accum_pre2 = _eff_from_to(eff_accum_pre, a["eff"]/100.0)
-            else:
-                eff_accum_pre2 = eff_accum_pre
-        elif a["kind"] == "postR":
-            if eff_accum_pre2 < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2","S3"]) > EPS_REMAIN:
-                _apply_eval(w, a["eff"], ["S1","S2","S3"])
-                eff_accum_all = _eff_from_to(eff_accum_pre2, a["eff"]/100.0)
-            else:
-                eff_accum_all = eff_accum_pre2
-        elif a["kind"] == "post_gram":
-            # Ya validado ≥14d postR en reglas duras
-            if eff_accum_all < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2","S3","S4"]) > EPS_REMAIN:
-                _apply_eval(w, a["eff"], ["S1","S2","S3","S4"])
+    # Ventanas
+    mask_obj_loc = mask_between(ts_local, sd, crit_end)          # siembra→10-Nov del año de sd
+    mask_pcc_loc = mask_between(ts_local, crit_start, crit_end)  # 10-Oct→10-Nov
 
     tot_ctrl = S1_pl*c1 + S2_pl*c2 + S3_pl*c3 + S4_pl*c4
     plantas_ctrl_cap = np.minimum(tot_ctrl, sup_cap)
 
-    X2loc = float(np.nansum(sup_cap[mask_since]))
-    X3loc = float(np.nansum(plantas_ctrl_cap[mask_since]))
-    loss3 = _loss(X3loc)
+    # Métricas en la ventana objetivo
+    X2loc_total = float(np.nansum(sup_cap[mask_obj_loc]))
+    X3loc_total = float(np.nansum(plantas_ctrl_cap[mask_obj_loc]))
+    X3loc_pcc   = float(np.nansum(plantas_ctrl_cap[mask_pcc_loc]))
+    X3loc_nopcc = X3loc_total - X3loc_pcc
+    X3loc_eff   = PCC_WEIGHT * X3loc_pcc + X3loc_nopcc
 
-    auc_cruda_loc = env["auc_cruda"]
+    # Pérdida: se minimiza sobre x3_efectivo (prioriza limpieza PCC)
+    loss3 = _loss(X3loc_eff)
+
+    # A2 en ventana objetivo
     sup_equiv  = np.divide(sup_cap,          factor_area, out=np.zeros_like(sup_cap),          where=(factor_area>0))
     ctrl_equiv = np.divide(plantas_ctrl_cap, factor_area, out=np.zeros_like(plantas_ctrl_cap), where=(factor_area>0))
-    auc_sup      = auc_time(ts_local, sup_equiv,  mask=mask_since)
-    auc_sup_ctrl = auc_time(ts_local, ctrl_equiv, mask=mask_since)
+    auc_sup      = auc_time(ts_local, sup_equiv,  mask=mask_obj_loc)
+    auc_sup_ctrl = auc_time(ts_local, ctrl_equiv, mask=mask_obj_loc)
     A2_sup  = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP*(auc_sup/auc_cruda_loc))
     A2_ctrl = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP*(auc_sup_ctrl/auc_cruda_loc))
 
-    return {"sow": sd, "loss_pct": float(loss3), "x2": X2loc, "x3": X3loc,
-            "A2_sup": A2_sup, "A2_ctrl": A2_ctrl, "schedule": schedule}
+    return {
+        "sow": sd,
+        "loss_pct": float(loss3),
+        "x2": X2loc_total,
+        "x3": X3loc_total,
+        "x3_eff": X3loc_eff,
+        "x3_pcc": X3loc_pcc,
+        "A2_sup": A2_sup,
+        "A2_ctrl": A2_ctrl,
+        "schedule": schedule
+    }
 
 # ===================== CONSTRUCCIÓN DE ESCENARIOS =====================
 def build_all_scenarios():
@@ -947,7 +923,7 @@ else:
 
 # ===================== REPORTE Y GRÁFICOS DEL MEJOR ESCENARIO =====================
 if results:
-    results_sorted = sorted(results, key=lambda r: (r["loss_pct"], r["x3"]))
+    results_sorted = sorted(results, key=lambda r: (r["loss_pct"], r["x3_eff"], r["x3_pcc"]))
     best = results_sorted[0]
 
     st.subheader("🏆 Mejor escenario")
@@ -1078,6 +1054,13 @@ if results:
             yaxis="y2", mode="lines+markers", line=dict(dash="dot")
         ))
 
+         
+        # Bandas y líneas guía
+        fig_best1.add_vrect(x0=pd.to_datetime(sow_date), x1=pd.to_datetime(crit_end), fillcolor="rgba(0,0,0,0.03)", line_width=0, layer="below", annotation_text="Ventana objetivo (siembra→10-Nov)", annotation_position="top left")
+        fig_best1.add_vline(x=pd.to_datetime(crit_start), line=dict(width=1, dash="dot"))
+        fig_best1.add_vline(x=pd.to_datetime(crit_end),   line=dict(width=1, dash="dot"))
+
+        
         # Ciec del mejor
         one_minus_best = compute_ciec_for(pd.to_datetime(best["sow"]).date())
         Ciec_best = 1.0 - one_minus_best
@@ -1144,8 +1127,15 @@ if results:
                                        text=[f"x₃={X3_b:.1f}"], textposition="top right"))
         fig2_best.update_layout(title="Figura — Pérdida de rendimiento (%) vs x",
                                 xaxis_title="x (pl·m²)", yaxis_title="Pérdida (%)")
+        
+        fig2_best.add_trace(go.Scatter(x=[best.get("x3_eff", float("nan"))], y=[_loss(best.get("x3_eff", float("nan")))],
+                               mode="markers+text", name="x₃ (efectivo, objetivo)",
+                               text=[f"x₃ef={best.get('x3_eff', float('nan')):.1f}"], textposition="bottom center"))
+
         st.plotly_chart(fig2_best, use_container_width=True)
 
+
+        
         # -------- Gráfico C: Dinámica S1–S4 semanal (stacked) con control + cap
         df_states_week_b = (
             pd.DataFrame({
