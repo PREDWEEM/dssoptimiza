@@ -514,26 +514,26 @@ with st.sidebar:
     use_post_selR_opt = st.checkbox("Incluir post + residual", value=True, key="opt_use_postR")
     use_post_gram_opt = st.checkbox("Incluir graminicida post", value=True, key="opt_use_gram")
 
-    ef_preR_opt      = st.slider("Eficiencia presiembraR (%)", 0, 100, 90, 1, key="opt_ef_preR")    if use_preR_opt else 0
-    ef_preemR_opt    = st.slider("Eficiencia preemergenteR (%)", 0, 100, 90, 1, key="opt_ef_preemR") if use_preemR_opt else 0
-    ef_post_selR_opt = st.slider("Eficiencia post residual (%)", 0, 100, 90, 1, key="opt_ef_postR")  if use_post_selR_opt else 0
+    ef_preR_opt      = st.slider("Eficiencia presiembraR (%)", 0, 100, 90, 1, key="opt_ef_preR")     if use_preR_opt else 0
+    ef_preemR_opt    = st.slider("Eficiencia preemergenteR (%)", 0, 100, 90, 1, key="opt_ef_preemR")  if use_preemR_opt else 0
+    ef_post_selR_opt = st.slider("Eficiencia post residual (%)", 0, 100, 90, 1, key="opt_ef_postR")   if use_post_selR_opt else 0
     ef_post_gram_opt = st.slider("Eficiencia graminicida post (%)", 0, 100, 90, 1, key="opt_ef_gram") if use_post_gram_opt else 0
 
     # --- residualidades ---
     st.markdown("### ⏱️ Residualidades por tipo")
-    res_min_preR, res_max_preR = st.slider("Presiembra (min–max)", 15, 120, (30, 45), 5, key="opt_res_preR")
-    res_step_preR               = st.number_input("Paso presiembra (días)", 1, 30, 5, 1, key="opt_step_preR")
-    res_min_preemR, res_max_preemR = st.slider("Preemergente (min–max)", 15, 120, (40, 50), 5, key="opt_res_preemR")
-    res_step_preemR             = st.number_input("Paso preemergente (días)", 1, 30, 5, 1, key="opt_step_preemR")
-    res_min_postR, res_max_postR = st.slider("Post (min–max)", 15, 120, (20, 25), 5, key="opt_res_postR")
-    res_step_postR              = st.number_input("Paso post (días)", 1, 30, 5, 1, key="opt_step_postR")
+    res_min_preR,   res_max_preR   = st.slider("Presiembra (min–max)",     15, 120, (30, 45), 5, key="opt_res_preR")
+    res_step_preR                  = st.number_input("Paso presiembra (d)", 1, 30,   5,       1, key="opt_step_preR")
+    res_min_preemR, res_max_preemR = st.slider("Preemergente (min–max)",   15, 120, (40, 50), 5, key="opt_res_preemR")
+    res_step_preemR                = st.number_input("Paso preemergente (d)",1, 30,  5,       1, key="opt_step_preemR")
+    res_min_postR,  res_max_postR  = st.slider("Post (min–max)",           15, 120, (20, 25), 5, key="opt_res_postR")
+    res_step_postR                 = st.number_input("Paso post (días)",     1, 30,  5,       1, key="opt_step_postR")
 
     # --- ventanas de aplicación ---
     preR_min_back  = st.number_input("Presiembra: hasta X días antes de siembra", 14, 120, 14, 1, key="opt_preR_back")
-    preR_step_days = st.number_input("Paso fechas presiembra (días)", 1, 30, 2, 1, key="opt_preR_step")
-    preem_step_days = st.number_input("Paso fechas preemergente (días)", 1, 10, 2, 1, key="opt_preem_step")
-    post_days_fw   = st.number_input("Post: días después de siembra (máx.)", 20, 180, 120, 1, key="opt_post_fw")
-    post_step_days = st.number_input("Paso fechas post (días)", 1, 30, 4, 1, key="opt_post_step")
+    preR_step_days = st.number_input("Paso fechas presiembra (días)",             1,  30,  2,  1, key="opt_preR_step")
+    preem_step_days= st.number_input("Paso fechas preemergente (días)",           1,  10,  2,  1, key="opt_preem_step")
+    post_days_fw   = st.number_input("Post: días después de siembra (máx.)",     20, 180, 120, 1, key="opt_post_fw")
+    post_step_days = st.number_input("Paso fechas post (días)",                   1,  30,  4,  1, key="opt_post_step")
 
     # -------------------- OBJETIVO PRIORITARIO (VENTANA) --------------------
     st.header("Objetivo prioritario (ventana)")
@@ -543,28 +543,15 @@ with st.sidebar:
         help="Pondera más fuerte la densidad efectiva dentro de la ventana crítica."
     )
     year_any = int(ts.min().year) if len(ts) else int(dt.date.today().year)
-    win_min = dt.date(year_any, 1, 1)
-    win_max = dt.date(year_any, 12, 31)
-    win_start = st.date_input(
-        "Inicio ventana",
-        value=dt.date(year_any, 10, 10),
-        min_value=win_min,
-        max_value=win_max,
-        key="obj_win_start"
-    )
-    win_end = st.date_input(
-        "Fin ventana",
-        value=dt.date(year_any, 11, 10),
-        min_value=win_min,
-        max_value=win_max,
-        key="obj_win_end"
-    )
-    weight_factor = st.number_input(
-        "Multiplicador dentro de ventana",
-        1.0, 50.0, 5.0, 0.5,
-        help="Cuánto más pesa el aporte dentro de la ventana (p. ej. 5×).",
-        key="obj_weight"
-    )
+    win_min  = dt.date(year_any, 1, 1)
+    win_max  = dt.date(year_any, 12, 31)
+    win_start = st.date_input("Inicio ventana", value=dt.date(year_any, 10, 10),
+                              min_value=win_min, max_value=win_max, key="obj_win_start")
+    win_end   = st.date_input("Fin ventana",    value=dt.date(year_any, 11, 10),
+                              min_value=win_min, max_value=win_max, key="obj_win_end")
+    weight_factor = st.number_input("Multiplicador dentro de ventana", 1.0, 50.0, 5.0, 0.5,
+                                    help="Cuánto más pesa el aporte dentro de la ventana (p. ej. 5×).",
+                                    key="obj_weight")
 
     # --- optimizador y parámetros globales ---
     optimizer  = st.selectbox("Optimizador", ["Grid (combinatorio)", "Búsqueda aleatoria", "Recocido simulado"], index=0, key="opt_optimizer")
@@ -620,7 +607,38 @@ def daterange(start_date, end_date, step_days):
         cur += pd.Timedelta(days=int(step_days))
     return out
 
-sow_candidates = daterange(sow_search_from, sow_search_to, sow_step_days)
+# ---- Umbral de AUC para considerar “válida” una siembra
+AUC_THR = 1e-9  # subir a 1e-6 si los EMERREL son muy chicos
+
+def _auc_since_sow(sd: dt.date) -> float:
+    """AUC de EMERREL cruda desde la siembra sd (sin supresión)."""
+    mask = (ts.dt.date >= sd)
+    if not mask.any():
+        return 0.0
+    return auc_time(ts, df_plot["EMERREL"].to_numpy(float), mask=mask)
+
+def is_valid_sow(sd: dt.date, thr: float = AUC_THR) -> bool:
+    """True si la AUC cruda desde sd excede el umbral thr."""
+    try:
+        val = _auc_since_sow(sd)
+        return (val is not None) and (val > thr)
+    except Exception:
+        return False
+
+# Genera el rango y filtra por AUC>umbral desde siembra
+_sow_all = daterange(sow_search_from, sow_search_to, sow_step_days)
+sow_candidates = [pd.to_datetime(d).date() for d in _sow_all if is_valid_sow(pd.to_datetime(d).date())]
+
+if len(sow_candidates) == 0:
+    st.warning("No hay fechas de siembra con AUC(EMERREL) > 0 en el rango elegido. "
+               "Ajustá el rango de siembra o revisá los datos.")
+else:
+    # Diagnóstico: cuántas siembras válidas y AUC mínima
+    try:
+        aucs = [_auc_since_sow(sd) for sd in sow_candidates]
+        st.caption(f"Fechas de siembra válidas: {len(sow_candidates)} · AUC(min)={min(aucs):.6f}")
+    except Exception:
+        pass
 
 def pre_sow_dates(sd):
     """Fechas válidas para presiembra residual (≤ siembra−14), respetando pasos."""
@@ -676,317 +694,38 @@ def build_all_scenarios():
     return scenarios
 
 def sample_random_scenario():
-    """Crea un escenario aleatorio para búsqueda estocástica."""
-    sd = random.choice(sow_candidates)
-    schedule = []
+    """Crea un escenario aleatorio para búsqueda estocástica (con reintentos de siembra válida)."""
+    sd = None
+    for _ in range(20):
+        cand_sd = random.choice(sow_candidates) if sow_candidates else None
+        if cand_sd is None:
+            break
+        if is_valid_sow(cand_sd):
+            sd = cand_sd
+            break
+    if sd is None:
+        # fallback si no hay siembras válidas
+        return (pd.to_datetime(dt.date(int(ts.min().year), 1, 1)).date(), [])
 
+    schedule = []
     if use_preR_opt and random.random() < 0.7:
         cand = pre_sow_dates(sd)
         if cand:
             schedule.append(act_presiembraR(random.choice(cand), random.choice(res_days_preR), ef_preR_opt))
-
     if use_preemR_opt and random.random() < 0.7:
         cand = preem_dates(sd)
         if cand:
             schedule.append(act_preemR(random.choice(cand), random.choice(res_days_preemR), ef_preemR_opt))
-
     if use_post_selR_opt and random.random() < 0.7:
         cand = post_dates(sd)
         if cand:
             schedule.append(act_post_selR(random.choice(cand), random.choice(res_days_postR), ef_post_selR_opt))
-
     if use_post_gram_opt and random.random() < 0.7:
         cand = post_dates(sd)
         if cand:
             schedule.append(act_post_gram(random.choice(cand), ef_post_gram_opt))
 
     return (pd.to_datetime(sd).date(), schedule)
-
-def evaluate(sd: dt.date, schedule: list):
-    """
-    Evalúa una agenda de tratamientos para una fecha de siembra sd.
-    Devuelve dict con métricas (loss_pct, x2/x2w, x3/x3w, A2_sup, A2_ctrl) o None si viola reglas.
-    Requiere: ts, df_plot, T12/T23/T34, FC_S, compute_canopy/compute_ciec_for, MAX_PLANTS_CAP,
-              EPS_REMAIN/EPS_EXCLUDE, use_window_obj, win_start, win_end, weight_factor
-    """
-    sow = pd.to_datetime(sd)
-    sow_plus_20 = sow + pd.Timedelta(days=20)
-
-    # ---- Reglas duras (incluye gram ≥14 días postR)
-    for a in schedule:
-        d = pd.to_datetime(a["date"])
-        if a["kind"] == "postR" and d < sow_plus_20:
-            return None
-        if a["kind"] == "preR" and d > (sow - pd.Timedelta(days=PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW)):
-            return None
-        if a["kind"] == "preemR" and (d < sow or d > (sow + pd.Timedelta(days=PREEM_R_MAX_AFTER_SOW_DAYS))):
-            return None
-        if a["kind"] == "post_gram":
-            postR_dates = [pd.to_datetime(x["date"]) for x in schedule if x["kind"] == "postR"]
-            if postR_dates:
-                min_gap = min((d - pr).days for pr in postR_dates)
-                if min_gap < 14:
-                    return None
-
-    # ---- Reconstrucción de estados y aportes para esta siembra
-    env = recompute_for_sow(sd, int(T12), int(T23), int(T34))
-    if env is None:
-        return None
-
-    mask_since    = env["mask_since"]
-    factor_area   = env["factor_area"]
-    auc_cruda_loc = env["auc_cruda"]
-    S1_pl, S2_pl, S3_pl, S4_pl = env["S_pl"]
-    sup_cap       = env["sup_cap"]
-    ts_local      = env["ts"]
-    fechas_d      = env["fechas_d"]
-
-    # ---- Control multiplicativo por estado (1 = sin control)
-    c1 = np.ones_like(fechas_d, float)
-    c2 = np.ones_like(fechas_d, float)
-    c3 = np.ones_like(fechas_d, float)
-    c4 = np.ones_like(fechas_d, float)
-
-    def _remaining_in_window_eval(w, states):
-        rem = 0.0
-        if "S1" in states: rem += np.sum(S1_pl * c1 * w)
-        if "S2" in states: rem += np.sum(S2_pl * c2 * w)
-        if "S3" in states: rem += np.sum(S3_pl * c3 * w)
-        if "S4" in states: rem += np.sum(S4_pl * c4 * w)
-        return float(rem)
-
-    def _apply_eval(w, eff, states):
-        if eff <= 0: return False
-        reduc = np.clip(1.0 - (eff/100.0) * np.clip(w, 0.0, 1.0), 0.0, 1.0)
-        if "S1" in states: np.multiply(c1, reduc, out=c1)
-        if "S2" in states: np.multiply(c2, reduc, out=c2)
-        if "S3" in states: np.multiply(c3, reduc, out=c3)
-        if "S4" in states: np.multiply(c4, reduc, out=c4)
-        return True
-
-    eff_accum_pre = eff_accum_pre2 = eff_accum_all = 0.0
-    def _eff_from_to(prev_eff, this_eff):  # combina eficiencias independientes
-        return 1.0 - (1.0 - prev_eff) * (1.0 - this_eff)
-
-    order = {"preR": 0, "preemR": 1, "postR": 2, "post_gram": 3}
-
-    # ===============================================================
-# 🧩 Helpers de objetivo por ventana (DEBE ir antes de evaluate)
-# ===============================================================
-
-def _in_window_md(d: dt.date, m1: int, d1: int, m2: int, d2: int) -> bool:
-    """
-    True si la fecha d (mes/día) cae dentro [m1-d1, m2-d2].
-    Soporta ventanas que envuelven fin de año (p.ej., 15-nov → 10-feb).
-    """
-    md = (d.month, d.day)
-    start = (m1, d1)
-    end   = (m2, d2)
-    if start <= end:
-        return start <= md <= end
-    # Ventana que envuelve fin de año
-    return md >= start or md <= end
-
-def build_objective_weights(fechas_d: np.ndarray,
-                            use_window: bool,
-                            win_start: dt.date,
-                            win_end: dt.date,
-                            w_factor: float) -> np.ndarray:
-    """
-    Vector de pesos (≥1): 1.0 fuera de ventana; w_factor dentro de ventana
-    si use_window y w_factor>1.
-    """
-    if (not use_window) or (w_factor <= 1.0):
-        return np.ones(len(fechas_d), dtype=float)
-
-    m1, d1 = win_start.month, win_start.day
-    m2, d2 = win_end.month,   win_end.day
-
-    mask = np.array([_in_window_md(d, m1, d1, m2, d2) for d in fechas_d], dtype=bool)
-    w = np.ones(len(fechas_d), dtype=float)
-    w[mask] = float(w_factor)
-    return w
-
-    
-    
-    
-    
-    # ---- Aplicación jerárquica de la agenda (ventanas como máscaras de fechas)
-    for a in sorted(schedule, key=lambda a: order.get(a["kind"], 9)):
-        ini = pd.to_datetime(a["date"]).date()
-        fin = (pd.to_datetime(a["date"]) + pd.Timedelta(days=int(a["days"]))).date()
-        w = ((fechas_d >= ini) & (fechas_d < fin)).astype(float)
-
-        if a["kind"] == "preR":
-            if _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN and a["eff"] > 0:
-                _apply_eval(w, a["eff"], ["S1","S2"])
-                eff_accum_pre = _eff_from_to(0.0, a["eff"]/100.0)
-
-        elif a["kind"] == "preemR":
-            if eff_accum_pre < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2"]) > EPS_REMAIN:
-                _apply_eval(w, a["eff"], ["S1","S2"])
-                eff_accum_pre2 = _eff_from_to(eff_accum_pre, a["eff"]/100.0)
-            else:
-                eff_accum_pre2 = eff_accum_pre
-
-        elif a["kind"] == "postR":
-            if eff_accum_pre2 < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2","S3"]) > EPS_REMAIN:
-                _apply_eval(w, a["eff"], ["S1","S2","S3"])
-                eff_accum_all = _eff_from_to(eff_accum_pre2, a["eff"]/100.0)
-            else:
-                eff_accum_all = eff_accum_pre2
-
-        elif a["kind"] == "post_gram":
-            if eff_accum_all < EPS_EXCLUDE and a["eff"] > 0 and _remaining_in_window_eval(w, ["S1","S2","S3","S4"]) > EPS_REMAIN:
-                _apply_eval(w, a["eff"], ["S1","S2","S3","S4"])
-
-    # ---- Totales con control y capeo por sup_cap
-    tot_ctrl = S1_pl*c1 + S2_pl*c2 + S3_pl*c3 + S4_pl*c4
-    plantas_ctrl_cap = np.minimum(tot_ctrl, sup_cap)
-
-    # ---- Pesos de objetivo por ventana
-    w_obj = build_objective_weights(fechas_d, use_window_obj, win_start, win_end, float(weight_factor))
-
-    # x2/x3 (crudos y ponderados)
-    X2loc  = float(np.nansum(sup_cap[mask_since]))
-    X3loc  = float(np.nansum(plantas_ctrl_cap[mask_since]))
-    X2wloc = float(np.nansum(sup_cap[mask_since] * w_obj[mask_since]))
-    X3wloc = float(np.nansum(plantas_ctrl_cap[mask_since] * w_obj[mask_since]))
-
-    # ---- Pérdida objetivo (prioriza densidad en ventana)
-    loss3 = _loss(X3wloc)
-
-    # ---- A2 vía AUC equivalentes (sin ponderar; reporting)
-    sup_equiv  = np.divide(sup_cap,          factor_area, out=np.zeros_like(sup_cap),          where=(factor_area>0))
-    ctrl_equiv = np.divide(plantas_ctrl_cap, factor_area, out=np.zeros_like(plantas_ctrl_cap), where=(factor_area>0))
-    auc_sup      = auc_time(ts_local, sup_equiv,  mask=mask_since)
-    auc_sup_ctrl = auc_time(ts_local, ctrl_equiv, mask=mask_since)
-    A2_sup  = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP * (auc_sup      / auc_cruda_loc))
-    A2_ctrl = min(MAX_PLANTS_CAP, MAX_PLANTS_CAP * (auc_sup_ctrl / auc_cruda_loc))
-
-    return {
-        "sow": sd,
-        "loss_pct": float(loss3),   # objetivo usa x3 ponderado
-        "x2": X2loc,                # crudo (referencia)
-        "x3": X3loc,                # crudo (referencia)
-        "x2w": X2wloc,              # ponderado (diagnóstico)
-        "x3w": X3wloc,              # ponderado (diagnóstico)
-        "A2_sup": A2_sup,
-        "A2_ctrl": A2_ctrl,
-        "schedule": schedule
-    }
-
-
-# ===============================================================
-# 🔧 FIX — Canopia y recomputo por fecha de siembra (usar antes de evaluate)
-# ===============================================================
-
-def compute_ciec_for(sow_d: dt.date):
-    """
-    Devuelve (1−Ciec) dinámico para una fecha de siembra dada (sow_d),
-    usando los parámetros de canopia de la UI.
-    Requiere: ts, mode_canopy, t_lag, t_close, cov_max, lai_max, k_beer, use_ciec, LAIhc, Ca, Cs
-    """
-    FCx, LAIx = compute_canopy(
-        ts, sow_d, mode_canopy,
-        int(t_lag), int(t_close),
-        float(cov_max), float(lai_max), float(k_beer)
-    )
-    if use_ciec:
-        Ciec_loc = np.clip(
-            (LAIx / max(1e-6, float(LAIhc))) *
-            ((float(Ca) if Ca > 0 else 1e-6) / (float(Cs) if Cs > 0 else 1e-6)),
-            0.0, 1.0
-        )
-    else:
-        Ciec_loc = np.zeros_like(LAIx, float)
-    return np.clip(1.0 - Ciec_loc, 0.0, 1.0)
-
-
-def recompute_for_sow(sow_d: dt.date, T12: int, T23: int, T34: int):
-    """
-    Reconstruye S1–S4 (secuenciales) y densidades ajustadas para una siembra específica (sow_d).
-    Devuelve:
-      {
-        "mask_since": np.ndarray[bool],
-        "factor_area": float,
-        "auc_cruda": float,
-        "S_pl": (S1_pl, S2_pl, S3_pl, S4_pl),
-        "sup_cap": np.ndarray[float],
-        "ts": pd.Series(datetime64),
-        "fechas_d": np.ndarray[date]
-      }
-    Requiere: df_plot["EMERREL"], ts, MAX_PLANTS_CAP, FC_S, compute_ciec_for, cap_cumulative
-    """
-    # Máscara desde siembra
-    mask_since = (ts.dt.date >= sow_d)
-
-    # Nacimientos (EMERREL) sólo desde siembra
-    births = np.where(mask_since.to_numpy(), df_plot["EMERREL"].to_numpy(float), 0.0)
-
-    # (1−Ciec) dinámico para esa fecha de siembra
-    one_minus = compute_ciec_for(sow_d)
-
-    # Estados secuenciales S1→S2→S3→S4 por “delay” T12,T23,T34
-    S1 = births.copy()
-    S2 = np.zeros_like(births)
-    S3 = np.zeros_like(births)
-    S4 = np.zeros_like(births)
-
-    for i in range(len(births)):
-        if i - int(T12) >= 0:
-            moved = births[i - int(T12)]
-            S1[i - int(T12)] -= moved
-            S2[i] += moved
-        if i - (int(T12) + int(T23)) >= 0:
-            moved = births[i - (int(T12) + int(T23))]
-            S2[i - (int(T12) + int(T23))] -= moved
-            S3[i] += moved
-        if i - (int(T12) + int(T23) + int(T34)) >= 0:
-            moved = births[i - (int(T12) + int(T23) + int(T34))]
-            S3[i - (int(T12) + int(T23) + int(T34))] -= moved
-            S4[i] += moved
-
-    # Saneos y reescalado por emeac para mantener consistencia
-    S1 = np.clip(S1, 0.0, None)
-    S2 = np.clip(S2, 0.0, None)
-    S3 = np.clip(S3, 0.0, None)
-    S4 = np.clip(S4, 0.0, None)
-
-    total_states = S1 + S2 + S3 + S4
-    emeac = np.cumsum(births)
-    scale = np.minimum(
-        np.divide(np.clip(emeac, 1e-9, None), np.clip(total_states, 1e-9, None)),
-        1.0
-    )
-    S1 *= scale; S2 *= scale; S3 *= scale; S4 *= scale
-
-    # Factor área (A2) desde siembra
-    auc_cruda_loc = auc_time(ts, df_plot["EMERREL"].to_numpy(float), mask=mask_since)
-    if auc_cruda_loc <= 0:
-        return None
-    factor_area = MAX_PLANTS_CAP / auc_cruda_loc
-
-    # Aportes en pl·m² aplicando supresión (1−Ciec) y pesos FC_S
-    S1_pl = np.where(mask_since, S1 * one_minus * FC_S["S1"] * factor_area, 0.0)
-    S2_pl = np.where(mask_since, S2 * one_minus * FC_S["S2"] * factor_area, 0.0)
-    S3_pl = np.where(mask_since, S3 * one_minus * FC_S["S3"] * factor_area, 0.0)
-    S4_pl = np.where(mask_since, S4 * one_minus * FC_S["S4"] * factor_area, 0.0)
-
-    # Cap diario por A2 (no puede superar la base)
-    base_pl_daily     = np.where(mask_since, df_plot["EMERREL"].to_numpy(float) * factor_area, 0.0)
-    base_pl_daily_cap = cap_cumulative(base_pl_daily, MAX_PLANTS_CAP, mask_since.to_numpy())
-    sup_cap = np.minimum(S1_pl + S2_pl + S3_pl + S4_pl, base_pl_daily_cap)
-
-    return {
-        "mask_since": mask_since.to_numpy(),
-        "factor_area": factor_area,
-        "auc_cruda": auc_cruda_loc,
-        "S_pl": (S1_pl, S2_pl, S3_pl, S4_pl),
-        "sup_cap": sup_cap,
-        "ts": ts,
-        "fechas_d": ts.dt.date.values
-    }
 
 # ===============================================================
 # 🧩 BLOQUE 7D — EJECUCIÓN DEL OPTIMIZADOR
@@ -1079,9 +818,6 @@ else:
         status_ph.success("Optimización finalizada.")
     else:
         status_ph.info("Listo para optimizar. Ajustá parámetros y presioná **Iniciar**.")
-
-# (El reporte y gráficos del mejor escenario siguen en el BLOQUE 8)
-
 
 
 # ===============================================================
