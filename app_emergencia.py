@@ -727,6 +727,12 @@ def sample_random_scenario():
 
     return (pd.to_datetime(sd).date(), schedule)
 
+# ==== GUARD: validar que evaluate existe en el ámbito global ====
+if "evaluate" not in globals() or not callable(globals()["evaluate"]):
+    st.error("No se encontró la función `evaluate(...)` en el ámbito global. "
+             "Asegurate de pegar `def evaluate(...)` ANTES de este bloque y sin indentación extra.")
+    st.stop()
+
 # ===============================================================
 # 🧩 BLOQUE 7D — EJECUCIÓN DEL OPTIMIZADOR
 # ===============================================================
