@@ -906,14 +906,17 @@ else:
     else:
         status_ph.info("Listo para optimizar. Ajustá parámetros y presioná **Iniciar**.")
 
-# Inicialización segura del estado de la app
-for key, default in {
-    "opt_running": False,
-    "opt_stop": False
-}.items():
-    if key not in st.session_state:
-        st.session_state[key] = default
 
+# ===============================================================
+# 🧩 INICIALIZACIÓN DEL ESTADO DE SESIÓN
+# ===============================================================
+import streamlit as st
+
+# Inicializa las variables de control del optimizador
+if "opt_running" not in st.session_state:
+    st.session_state.opt_running = False
+if "opt_stop" not in st.session_state:
+    st.session_state.opt_stop = False
 
 # ===============================================================
 # 🧩 BLOQUE 7 — OPTIMIZACIÓN (Grid / Aleatoria / Recocido Simulado)
