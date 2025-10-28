@@ -1094,7 +1094,7 @@ if results:
 
         # -------- Pintar franjas según tipo de intervención (colores distintos con misma atenuación)
         color_map = {
-            "preR": "rgba(255,165,0,0.18)",    # naranja — presiembra residual
+            "preR": "rgba(255,165,0,0.25)",    # naranja — presiembra residual
             "preemR": "rgba(46,204,113,0.18)", # verde — preemergente residual
             "postR": "rgba(30,144,255,0.18)",  # azul — post-emergente residual
             "post_gram": "rgba(255,99,132,0.18)" # rosado — graminicida post
