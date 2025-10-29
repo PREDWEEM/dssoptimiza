@@ -554,7 +554,7 @@ with st.sidebar:
                                     key="obj_weight")
 
     # --- optimizador y parámetros globales ---
-    optimizer  = st.selectbox("Optimizador", ["Grid (combinatorio)", "Búsqueda aleatoria", "Recocido simulado"], index=0, key="opt_optimizer")
+    optimizer  = st.selectbox("Optimizador", ["Búsqueda aleatoria", "Grid (combinatorio)", "Recocido simulado"], index=0, key="opt_optimizer")
     max_evals  = st.number_input("Máx. evaluaciones", 100, 100000, 4000, 100, key="opt_maxevals")
     top_k_show = st.number_input("Top-k a mostrar", 1, 20, 5, 1, key="opt_topk")
 
