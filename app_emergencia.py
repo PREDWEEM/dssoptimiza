@@ -157,7 +157,7 @@ with st.sidebar:
     use_ciec = st.checkbox("Incluir Ciec", True)
     Ca = st.number_input("Ca", 50, 700, 250)
     Cs = st.number_input("Cs", 50, 700, 250)
-    LAIhc = st.number_input("LAIhc", 3.0, 6.0, 3.0)
+    LAIhc = st.number_input("LAIhc- Habilidad competitiva", 3.0, 6.0, 3.0)
 
 def compute_canopy(fechas, sow_date, mode_canopy, t_lag, t_close, cov_max, lai_max, k_beer):
     days_since = np.array([(pd.Timestamp(f).date()-sow_date).days for f in fechas])
