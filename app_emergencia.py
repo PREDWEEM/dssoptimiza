@@ -532,7 +532,7 @@ with st.sidebar:
     preR_min_back  = st.number_input("Presiembra: hasta X días antes de siembra", 14, 120, 14, 1, key="opt_preR_back")
     preR_step_days = st.number_input("Paso fechas presiembra (días)",             1,  30,  2,  1, key="opt_preR_step")
     preem_step_days= st.number_input("Paso fechas preemergente (días)",           1,  10,  2,  1, key="opt_preem_step")
-    post_days_fw   = st.number_input("Post: días después de siembra (máx.)",     20, 100, 80, 1, key="opt_post_fw")
+    post_days_fw   = st.number_input("Post: días después de siembra (máx.)",     20, 100, 90, 1, key="opt_post_fw")
     post_step_days = st.number_input("Paso fechas post (días)",                   1,  30,  4,  1, key="opt_post_step")
 
     # -------------------- OBJETIVO PRIORITARIO (VENTANA) --------------------
