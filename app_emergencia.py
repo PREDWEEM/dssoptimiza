@@ -198,9 +198,9 @@ st.session_state["sow_date_cache"] = sow_date
 births = df_plot["EMERREL"].astype(float).clip(lower=0.0).to_numpy()
 births = np.where((ts.dt.date >= sow_date).to_numpy(), births, 0.0)
 
-T12 = st.sidebar.number_input("Duración S1→S2 (días)", 1, 60, 10, 1)
-T23 = st.sidebar.number_input("Duración S2→S3 (días)", 1, 60, 15, 1)
-T34 = st.sidebar.number_input("Duración S3→S4 (días)", 1, 60, 20, 1)
+T12 = st.sidebar.number_input("Duración S1→S2 (días)", 1, 60, 5, 1)
+T23 = st.sidebar.number_input("Duración S2→S3 (días)", 1, 60, 20, 1)
+T34 = st.sidebar.number_input("Duración S3→S4 (días)", 1, 60, 26, 1)
 
 S1 = births.copy(); S2 = np.zeros_like(births); S3 = np.zeros_like(births); S4 = np.zeros_like(births)
 for i in range(len(births)):
@@ -261,7 +261,7 @@ with st.sidebar:
                                    max_value=max_date, disabled=not pre_selNR)
 
     preR = st.checkbox("Selectivo + residual (presiembra)", value=False,
-                       help="Solo permitido hasta siembra−14 días. Actúa S1–S2.")
+                       help="Solo permitido hasta siembra−14 días. Actúa S1.")
     preR_days = st.slider("Residualidad presiembra (días)", 15, 120, 14, 1, disabled=not preR)
     preR_max = sow_date - timedelta(days=PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW)
     preR_date = st.date_input("Fecha selectivo + residual (presiembra)",
@@ -274,7 +274,7 @@ with st.sidebar:
 with st.sidebar:
     st.header("Manejo pre-emergente (manual)")
     preemR = st.checkbox("Selectivo + residual (preemergente)", value=False,
-                         help="Ventana [siembra, siembra+10]. Actúa S1–S2.")
+                         help="Ventana [siembra, siembra+10]. Actúa S1.")
     preemR_days = st.slider("Residualidad preemergente (días)", 15, 120, 45, 1, disabled=not preemR)
     preem_min = sow_date
     preem_max = min(max_date, sow_date + timedelta(days=PREEM_R_MAX_AFTER_SOW_DAYS))
@@ -286,7 +286,7 @@ with st.sidebar:
 with st.sidebar:
     st.header("Manejo post-emergencia (manual)")
     post_selR = st.checkbox("Selectivo + residual (post)", value=False,
-                            help="≥ siembra + 20 días. Actúa S1–S3.")
+                            help="≥ siembra + 20 días. Actúa S1–S2.")
     post_min_postR = max(min_date, sow_date + timedelta(days=20))
     post_selR_date = st.date_input("Fecha selectivo + residual (post)",
                                    value=post_min_postR,
@@ -296,7 +296,7 @@ with st.sidebar:
     post_res_dias = st.slider("Residualidad post (días)", 30, 120, 45, 1, disabled=not post_selR)
 
     post_gram = st.checkbox("Selectivo graminicida (post)", value=False,
-                             help="Actúa S1–S4. ≥ 14 d después del postR.")
+                             help="Actúa S1–S3. ≥ 14 d después del postR.")
     default_gram_date = (post_selR_date + timedelta(days=14)) if post_selR else max(min_date, sow_date)
     post_gram_date = st.date_input("Fecha graminicida (post)",
                                    value=default_gram_date,
@@ -327,15 +327,15 @@ for w in warnings: st.warning(w)
 # ------------------ CRONOGRAMA RESUMIDO ------------------
 if pre_glifo: add_sched("Pre·Glifosato (NSr, 1 d)", pre_glifo_date, None, "Barbecho")
 if pre_selNR: add_sched("Pre·Selectivo NR", pre_selNR_date, NR_DAYS_DEFAULT, f"NR {NR_DAYS_DEFAULT} d")
-if preR:      add_sched("Pre-siembra + residual", preR_date, preR_days, f"Protege {preR_days} d (S1–S2)")
-if preemR:    add_sched("Pre-emergente + residual", preemR_date, preemR_days, f"Protege {preemR_days} d (S1–S2)")
-if post_selR: add_sched("Post + residual", post_selR_date, post_res_dias, f"Protege {post_res_dias} d (S1–S3)")
+if preR:      add_sched("Pre-siembra + residual", preR_date, preR_days, f"Protege {preR_days} d (S1)")
+if preemR:    add_sched("Pre-emergente + residual", preemR_date, preemR_days, f"Protege {preemR_days} d (S1)")
+if post_selR: add_sched("Post + residual", post_selR_date, post_res_dias, f"Protege {post_res_dias} d (S1–S2)")
 if post_gram:
     ini = pd.to_datetime(post_gram_date).date()
     fin = (pd.to_datetime(post_gram_date) + pd.Timedelta(days=POST_GRAM_FORWARD_DAYS)).date()
     sched_rows.append({"Intervención": "Post graminicida (NR,+10 d)",
                        "Inicio": str(ini), "Fin": str(fin),
-                       "Nota": "S1–S4; ≥ 14 d postR"})
+                       "Nota": "S1–S3; ≥ 14 d postR"})
 sched = pd.DataFrame(sched_rows)
 
 # ------------------ EFICIENCIAS DE CONTROL ------------------
@@ -415,14 +415,14 @@ if factor_area_to_plants is not None:
     eff_accum_pre=eff_accum_pre2=eff_accum_all=0.0
     if preR:
         w_preR=weights_residual(preR_date,preR_days)
-        if _remaining_in_window(w_preR,["S1","S2"])>EPS_REMAIN and ef_preR>0:
-            apply_efficiency_per_state(w_preR,ef_preR,["S1","S2"])
+        if _remaining_in_window(w_preR,["S1"])>EPS_REMAIN and ef_preR>0:
+            apply_efficiency_per_state(w_preR,ef_preR,["S1"])
             eff_accum_pre=_eff_from_to(0.0,ef_preR/100.0)
 
     if preemR and eff_accum_pre<EPS_EXCLUDE:
         w_preem=weights_residual(preemR_date,preemR_days)
-        if _remaining_in_window(w_preem,["S1","S2"])>EPS_REMAIN and ef_preemR>0:
-            apply_efficiency_per_state(w_preem,ef_preemR,["S1","S2"])
+        if _remaining_in_window(w_preem,["S1"])>EPS_REMAIN and ef_preemR>0:
+            apply_efficiency_per_state(w_preem,ef_preemR,["S1"])
             eff_accum_pre2=_eff_from_to(eff_accum_pre,ef_preemR/100.0)
         else: eff_accum_pre2=eff_accum_pre
     else: eff_accum_pre2=eff_accum_pre
@@ -439,8 +439,8 @@ if factor_area_to_plants is not None:
 
     if post_selR and eff_accum_pre2<EPS_EXCLUDE:
         w_postR=weights_residual(post_selR_date,post_res_dias)
-        if _remaining_in_window(w_postR,["S1","S2","S3"])>EPS_REMAIN and ef_post_selR>0:
-            apply_efficiency_per_state(w_postR,ef_post_selR,["S1","S2","S3"])
+        if _remaining_in_window(w_postR,["S1","S2"])>EPS_REMAIN and ef_post_selR>0:
+            apply_efficiency_per_state(w_postR,ef_post_selR,["S1","S2"])
             eff_accum_all=_eff_from_to(eff_accum_pre2,ef_post_selR/100.0)
         else: eff_accum_all=eff_accum_pre2
     else: eff_accum_all=eff_accum_pre2
@@ -451,8 +451,8 @@ if factor_area_to_plants is not None:
             allow_after_postR=(pd.to_datetime(post_gram_date)>=(pd.to_datetime(post_selR_date)+pd.Timedelta(days=14)))
         if allow_after_postR:
             w_gram=weights_residual(post_gram_date,POST_GRAM_FORWARD_DAYS)
-            if _remaining_in_window(w_gram,["S1","S2","S3","S4"])>EPS_REMAIN and ef_post_gram>0:
-                apply_efficiency_per_state(w_gram,ef_post_gram,["S1","S2","S3","S4"])
+            if _remaining_in_window(w_gram,["S1","S2","S3"])>EPS_REMAIN and ef_post_gram>0:
+                apply_efficiency_per_state(w_gram,ef_post_gram,["S1","S2","S3"])
 
     # Series finales con control aplicado
     S1_pl_ctrl=S1_pl*ctrl_S1
@@ -666,10 +666,10 @@ def post_dates(sd):
 # 🧩 BLOQUE 7C — GENERACIÓN DE ESCENARIOS Y MUESTREO
 # ===============================================================
 
-def act_presiembraR(date_val, R, eff):  return {"kind":"preR","date":pd.to_datetime(date_val).date(),"days":int(R),"eff":eff,"states":["S1","S2"]}
-def act_preemR(date_val, R, eff):      return {"kind":"preemR","date":pd.to_datetime(date_val).date(),"days":int(R),"eff":eff,"states":["S1","S2"]}
-def act_post_selR(date_val, R, eff):   return {"kind":"postR","date":pd.to_datetime(date_val).date(),"days":int(R),"eff":eff,"states":["S1","S2","S3"]}
-def act_post_gram(date_val, eff):      return {"kind":"post_gram","date":pd.to_datetime(date_val).date(),"days":POST_GRAM_FORWARD_DAYS,"eff":eff,"states":["S1","S2","S3","S4"]}
+def act_presiembraR(date_val, R, eff):  return {"kind":"preR","date":pd.to_datetime(date_val).date(),"days":int(R),"eff":eff,"states":["S1"]}
+def act_preemR(date_val, R, eff):      return {"kind":"preemR","date":pd.to_datetime(date_val).date(),"days":int(R),"eff":eff,"states":["S1"]}
+def act_post_selR(date_val, R, eff):   return {"kind":"postR","date":pd.to_datetime(date_val).date(),"days":int(R),"eff":eff,"states":["S1","S2"]}
+def act_post_gram(date_val, eff):      return {"kind":"post_gram","date":pd.to_datetime(date_val).date(),"days":POST_GRAM_FORWARD_DAYS,"eff":eff,"states":["S1","S2","S3"]}
 
 def build_all_scenarios():
     """Genera todas las combinaciones posibles (con jerarquía de grupos)."""
