@@ -1271,7 +1271,8 @@ if results:
             "</div>", unsafe_allow_html=True
         )
 
-        # -------- Gráfico B: Pérdidas ponderadas (%) vs densidad efectiva ponderada (x₂w, x₃w)
+       
+# -------- Gráfico B: Pérdidas ponderadas (%) vs densidad efectiva ponderada (x₂w, x₃w)
 # Calcula pesos dentro de la ventana crítica (PCC)
 w_obj_b = build_objective_weights(fechas_d_b, use_window_obj, win_start, win_end, float(weight_factor))
 
@@ -1286,7 +1287,7 @@ X3w_b = float(np.nansum(
 x_curve = np.linspace(0.0, MAX_PLANTS_CAP, 400)
 y_curve = _loss(x_curve)
 
-# Gráfico
+# Gráfico de pérdidas ponderadas
 fig2_best = go.Figure()
 fig2_best.add_trace(go.Scatter(
     x=x_curve, y=y_curve,
@@ -1315,43 +1316,43 @@ fig2_best.update_layout(
     yaxis_title="Pérdida ponderada (%)",
     margin=dict(l=20, r=20, t=50, b=40)
 )
-
 st.plotly_chart(fig2_best, use_container_width=True)
-        
 
-        # -------- Gráfico C: Dinámica S1–S4 semanal (stacked) con control + cap
-        df_states_week_b = (
-            pd.DataFrame({
-                "fecha": ts_b,
-                "S1": S1_ctrl_cap_b, "S2": S2_ctrl_cap_b,
-                "S3": S3_ctrl_cap_b, "S4": S4_ctrl_cap_b
-            })
-            .set_index("fecha")
-            .resample("W-MON")
-            .sum()
-            .reset_index()
-        )
-        st.subheader("Dinámica temporal de S1–S4 (con control + cap) — Mejor escenario")
-        fig_states = go.Figure()
-        for col in ["S1", "S2", "S3", "S4"]:
-            fig_states.add_trace(go.Scatter(
-                x=df_states_week_b["fecha"],
-                y=df_states_week_b[col],
-                mode="lines",
-                name=col,
-                stackgroup="one"
-            ))
-        fig_states.update_layout(
-            title="Aportes semanales por estado (con control + cap)",
-            xaxis_title="Tiempo",
-            yaxis_title="pl·m²·sem⁻¹"
-        )
-        st.plotly_chart(fig_states, use_container_width=True)
-else:
-    st.info("Aún no hay resultados de optimización para mostrar.")
+# -------- Gráfico C: Dinámica S1–S4 semanal (stacked) con control + cap
+df_states_week_b = (
+    pd.DataFrame({
+        "fecha": ts_b,
+        "S1": S1_ctrl_cap_b,
+        "S2": S2_ctrl_cap_b,
+        "S3": S3_ctrl_cap_b,
+        "S4": S4_ctrl_cap_b
+    })
+    .set_index("fecha")
+    .resample("W-MON")
+    .sum()
+    .reset_index()
+)
 
+st.subheader("Dinámica temporal de S1–S4 (con control + cap) — Mejor escenario")
 
+fig_states = go.Figure()
+for col in ["S1", "S2", "S3", "S4"]:
+    fig_states.add_trace(go.Scatter(
+        x=df_states_week_b["fecha"],
+        y=df_states_week_b[col],
+        mode="lines",
+        name=col,
+        stackgroup="one"
+    ))
 
+fig_states.update_layout(
+    title="Aportes semanales por estado (con control + cap)",
+    xaxis_title="Tiempo",
+    yaxis_title="pl·m²·sem⁻¹",
+    margin=dict(l=20, r=20, t=50, b=40)
+)
+
+st.plotly_chart(fig_states, use_container_width=True)
 
 
 
