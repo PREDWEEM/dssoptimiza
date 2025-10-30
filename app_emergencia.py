@@ -1271,20 +1271,53 @@ if results:
             "</div>", unsafe_allow_html=True
         )
 
-        # -------- Gráfico B: Pérdida (%) vs x con marcadores x2 y x3
-        X2_b = float(np.nansum(sup_cap_b[mask_since_b]))
-        X3_b = float(np.nansum((S1_ctrl_cap_b + S2_ctrl_cap_b + S3_ctrl_cap_b + S4_ctrl_cap_b)[mask_since_b]))
-        x_curve = np.linspace(0.0, MAX_PLANTS_CAP, 400)
-        y_curve = _loss(x_curve)
-        fig2_best = go.Figure()
-        fig2_best.add_trace(go.Scatter(x=x_curve, y=y_curve, mode="lines", name="Modelo pérdida % vs x"))
-        fig2_best.add_trace(go.Scatter(x=[X2_b], y=[_loss(X2_b)], mode="markers+text", name="x₂ (sin ctrl)",
-                                       text=[f"x₂={X2_b:.1f}"], textposition="top center"))
-        fig2_best.add_trace(go.Scatter(x=[X3_b], y=[_loss(X3_b)], mode="markers+text", name="x₃ (con ctrl)",
-                                       text=[f"x₃={X3_b:.1f}"], textposition="top right"))
-        fig2_best.update_layout(title="Pérdida de rendimiento (%) vs x",
-                                xaxis_title="x (pl·m²)", yaxis_title="Pérdida (%)")
-        st.plotly_chart(fig2_best, use_container_width=True)
+        # -------- Gráfico B: Pérdidas ponderadas (%) vs densidad efectiva ponderada (x₂w, x₃w)
+# Calcula pesos dentro de la ventana crítica (PCC)
+w_obj_b = build_objective_weights(fechas_d_b, use_window_obj, win_start, win_end, float(weight_factor))
+
+# Densidades ponderadas dentro de la ventana
+X2w_b = float(np.nansum(sup_cap_b[mask_since_b] * w_obj_b[mask_since_b]))
+X3w_b = float(np.nansum(
+    (S1_ctrl_cap_b + S2_ctrl_cap_b + S3_ctrl_cap_b + S4_ctrl_cap_b)[mask_since_b] * 
+    w_obj_b[mask_since_b]
+))
+
+# Curva de pérdida
+x_curve = np.linspace(0.0, MAX_PLANTS_CAP, 400)
+y_curve = _loss(x_curve)
+
+# Gráfico
+fig2_best = go.Figure()
+fig2_best.add_trace(go.Scatter(
+    x=x_curve, y=y_curve,
+    mode="lines",
+    name="Modelo pérdida % ponderada (PCC)"
+))
+fig2_best.add_trace(go.Scatter(
+    x=[X2w_b],
+    y=[_loss(X2w_b)],
+    mode="markers+text",
+    name="x₂ ponderado (sin control)",
+    text=[f"x₂w={X2w_b:.1f}"],
+    textposition="top center"
+))
+fig2_best.add_trace(go.Scatter(
+    x=[X3w_b],
+    y=[_loss(X3w_b)],
+    mode="markers+text",
+    name="x₃ ponderado (con control)",
+    text=[f"x₃w={X3w_b:.1f}"],
+    textposition="top right"
+))
+fig2_best.update_layout(
+    title="Pérdida de rendimiento ponderada (%) vs densidad efectiva (PCC)",
+    xaxis_title="Densidad efectiva ponderada (pl·m²)",
+    yaxis_title="Pérdida ponderada (%)",
+    margin=dict(l=20, r=20, t=50, b=40)
+)
+
+st.plotly_chart(fig2_best, use_container_width=True)
+        
 
         # -------- Gráfico C: Dinámica S1–S4 semanal (stacked) con control + cap
         df_states_week_b = (
