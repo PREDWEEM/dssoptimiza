@@ -549,8 +549,8 @@ with st.sidebar:
                               min_value=win_min, max_value=win_max, key="obj_win_start")
     win_end   = st.date_input("Fin ventana",    value=dt.date(year_any, 11, 10),
                               min_value=win_min, max_value=win_max, key="obj_win_end")
-    weight_factor = st.number_input("Multiplicador dentro de ventana", 1.0, 50.0, 5.0, 0.5,
-                                    help="Cuánto más pesa el aporte dentro de la ventana (p. ej. 5×).",
+    weight_factor = st.number_input("Multiplicador dentro de ventana", 1.0, 50.0, 3.0, 0.5,
+                                    help="Cuánto más pesa el aporte dentro de la ventana (p. ej. 3×).",
                                     key="obj_weight")
 
     # --- optimizador y parámetros globales ---
