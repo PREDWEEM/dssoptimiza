@@ -645,27 +645,14 @@ def sample_random_scenario():
         if is_valid_sow(cand_sd): sd=cand_sd; break
     if sd is None: return (pd.to_datetime(dt.date(int(ts.min().year),1,1)).date(), [])
     schedule=[]
-    
-    if use_preR_opt and random.random() < 0.7:
-    cand = pre_sow_dates(sd)
-    if cand:
-        schedule.append(act_presiembraR(random.choice(cand), random.choice(res_days_preR), ef_preR_opt))
-
-    if use_preemR_opt and random.random() < 0.7:
-        cand = preem_dates(sd)
-        if cand:
-            schedule.append(act_preemR(random.choice(cand), random.choice(res_days_preemR), ef_preemR_opt))
-    
-    if use_post_selR_opt and random.random() < 0.7:
-        cand = post_dates(sd)
-        if cand:
-            schedule.append(act_post_selR(random.choice(cand), random.choice(res_days_postR), ef_post_selR_opt))
-    
-    if use_post_gram_opt and random.random() < 0.7:
-        cand = post_dates(sd)
-        if cand:
-            schedule.append(act_post_gram(random.choice(cand), ef_post_gram_opt))
-
+    if use_preR_opt      and random.random()<0.7: 
+        cand=pre_sow_dates(sd);   if cand: schedule.append(act_presiembraR(random.choice(cand), random.choice(res_days_preR), ef_preR_opt))
+    if use_preemR_opt    and random.random()<0.7:
+        cand=preem_dates(sd);     if cand: schedule.append(act_preemR(random.choice(cand), random.choice(res_days_preemR), ef_preemR_opt))
+    if use_post_selR_opt and random.random()<0.7:
+        cand=post_dates(sd);      if cand: schedule.append(act_post_selR(random.choice(cand), random.choice(res_days_postR), ef_post_selR_opt))
+    if use_post_gram_opt and random.random()<0.7:
+        cand=post_dates(sd);      if cand: schedule.append(act_post_gram(random.choice(cand), ef_post_gram_opt))
     return (pd.to_datetime(sd).date(), schedule)
 
 # ---------- Objetivo por ventana (pesos) ----------
@@ -780,6 +767,7 @@ else:
         st.session_state.opt_running=False; st.session_state.opt_stop=False; status_ph.success("Optimización finalizada.")
     else:
         status_ph.info("Listo para optimizar. Ajustá parámetros y presioná **Iniciar**.")
+
 
 # ===============================================================
 # 🧩 BLOQUE 8 — REPORTE Y GRÁFICOS DEL MEJOR ESCENARIO
@@ -900,6 +888,10 @@ if results:
         fig_states.update_layout(title="Aportes semanales por estado (con control + cap)", xaxis_title="Tiempo", yaxis_title="pl·m²·sem⁻¹", margin=dict(l=20,r=20,t=50,b=40))
         fig_states.add_vline(x=ref_line_date, **ref_line_style); fig_states.add_annotation(**ref_annot)
         st.plotly_chart(fig_states, use_container_width=True)
+
+
+
+
 
 
 
