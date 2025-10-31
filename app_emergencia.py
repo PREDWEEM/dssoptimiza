@@ -39,8 +39,8 @@ PRESIEMBRA_R_MIN_DAYS_BEFORE_SOW  = 14
 PREEM_R_MAX_AFTER_SOW_DAYS        = 10
 EPS_REMAIN  = 1e-9
 EPS_EXCLUDE = 0.99
-PCC_REF_MONTH = 10
-PCC_REF_DAY   = 1    # 🔧 fecha de referencia para la pérdida (10-oct)
+PCC_REF_MONTH = 9
+PCC_REF_DAY   = 31   # 🔧 fecha de referencia para la pérdida (10-oct)
 
 # ------------------ UTILIDADES DE LECTURA ------------------
 def sniff_sep_dec(text: str):
