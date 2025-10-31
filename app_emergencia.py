@@ -638,22 +638,44 @@ def build_all_scenarios():
     return scenarios
 
 def sample_random_scenario():
-    sd=None
+    """Crea un escenario aleatorio para búsqueda estocástica (con reintentos de siembra válida)."""
+    sd = None
     for _ in range(20):
         cand_sd = random.choice(sow_candidates) if sow_candidates else None
-        if cand_sd is None: break
-        if is_valid_sow(cand_sd): sd=cand_sd; break
-    if sd is None: return (pd.to_datetime(dt.date(int(ts.min().year),1,1)).date(), [])
-    schedule=[]
-    if use_preR_opt      and random.random()<0.7: 
-        cand=pre_sow_dates(sd);   if cand: schedule.append(act_presiembraR(random.choice(cand), random.choice(res_days_preR), ef_preR_opt))
-    if use_preemR_opt    and random.random()<0.7:
-        cand=preem_dates(sd);     if cand: schedule.append(act_preemR(random.choice(cand), random.choice(res_days_preemR), ef_preemR_opt))
-    if use_post_selR_opt and random.random()<0.7:
-        cand=post_dates(sd);      if cand: schedule.append(act_post_selR(random.choice(cand), random.choice(res_days_postR), ef_post_selR_opt))
-    if use_post_gram_opt and random.random()<0.7:
-        cand=post_dates(sd);      if cand: schedule.append(act_post_gram(random.choice(cand), ef_post_gram_opt))
+        if cand_sd is None:
+            break
+        if is_valid_sow(cand_sd):
+            sd = cand_sd
+            break
+
+    if sd is None:
+        # fallback si no hay siembras válidas
+        return (pd.to_datetime(dt.date(int(ts.min().year), 1, 1)).date(), [])
+
+    schedule = []
+
+    if use_preR_opt and random.random() < 0.7:
+        cand = pre_sow_dates(sd)
+        if cand:
+            schedule.append(act_presiembraR(random.choice(cand), random.choice(res_days_preR), ef_preR_opt))
+
+    if use_preemR_opt and random.random() < 0.7:
+        cand = preem_dates(sd)
+        if cand:
+            schedule.append(act_preemR(random.choice(cand), random.choice(res_days_preemR), ef_preemR_opt))
+
+    if use_post_selR_opt and random.random() < 0.7:
+        cand = post_dates(sd)
+        if cand:
+            schedule.append(act_post_selR(random.choice(cand), random.choice(res_days_postR), ef_post_selR_opt))
+
+    if use_post_gram_opt and random.random() < 0.7:
+        cand = post_dates(sd)
+        if cand:
+            schedule.append(act_post_gram(random.choice(cand), ef_post_gram_opt))
+
     return (pd.to_datetime(sd).date(), schedule)
+
 
 # ---------- Objetivo por ventana (pesos) ----------
 def _in_window_md(d: dt.date, m1: int, d1: int, m2: int, d2: int) -> bool:
