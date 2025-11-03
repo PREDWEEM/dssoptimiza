@@ -200,7 +200,7 @@ births = np.where((ts.dt.date >= sow_date).to_numpy(), births, 0.0)
 
 T12 = st.sidebar.number_input("Duración S1→S2 (días)", 1, 60, 5, 1)
 T23 = st.sidebar.number_input("Duración S2→S3 (días)", 1, 60, 20, 1)
-T34 = st.sidebar.number_input("Duración S3→S4 (días)", 1, 60, 26, 1)
+T34 = st.sidebar.number_input("Duración S3→S4 (días)", 1, 60, 40, 1)
 
 S1 = births.copy(); S2 = np.zeros_like(births); S3 = np.zeros_like(births); S4 = np.zeros_like(births)
 for i in range(len(births)):
