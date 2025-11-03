@@ -198,7 +198,7 @@ st.session_state["sow_date_cache"] = sow_date
 births = df_plot["EMERREL"].astype(float).clip(lower=0.0).to_numpy()
 births = np.where((ts.dt.date >= sow_date).to_numpy(), births, 0.0)
 
-T12 = st.sidebar.number_input("Duración S1→S2 (días)", 1, 60, 5, 1)
+T12 = st.sidebar.number_input("Duración S1→S2 (días)", 1, 60, 7, 1)
 T23 = st.sidebar.number_input("Duración S2→S3 (días)", 1, 60, 20, 1)
 T34 = st.sidebar.number_input("Duración S3→S4 (días)", 1, 60, 40, 1)
 
@@ -549,7 +549,7 @@ with st.sidebar:
                               min_value=win_min, max_value=win_max, key="obj_win_start")
     win_end   = st.date_input("Fin ventana",    value=dt.date(year_any, 11, 10),
                               min_value=win_min, max_value=win_max, key="obj_win_end")
-    weight_factor = st.number_input("Multiplicador dentro de ventana", 0.1, 50.0, 1.00, 0.5,
+    weight_factor = st.number_input("Multiplicador dentro de ventana", 0.1, 50.0, 1.50, 0.5,
                                     help="Cuánto más pesa el aporte dentro de la ventana (p. ej. 3×).",
                                     key="obj_weight")
 
