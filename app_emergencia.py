@@ -490,7 +490,7 @@ with st.sidebar:
 
     # --- rango de fechas de siembra ---
     sow_min = dt.date(int(ts.min().year), 5, 1)
-    sow_max = dt.date(int(ts.min().year), 8, 1)
+    sow_max = dt.date(int(ts.min().year), 7, 1)
 
     sow_search_from = st.date_input(
         "Buscar siembra desde",
