@@ -143,14 +143,14 @@ df_plot = pd.DataFrame({"fecha": df["fecha"], "EMERREL": emerrel})
 years = df_plot["fecha"].dt.year
 year_ref = int(years.mode().iloc[0]) if len(years) else dt.date.today().year
 sow_min = dt.date(year_ref, 5, 1)
-sow_max = dt.date(year_ref, 8, 1)
+sow_max = dt.date(year_ref, 7, 1)
 
 with st.sidebar:
     st.header("Siembra & Canopia")
     sow_date = st.date_input("Fecha de siembra", value=sow_min, min_value=sow_min, max_value=sow_max)
     mode_canopy = st.selectbox("Canopia", ["Cobertura dinámica (%)", "LAI dinámico"], index=0)
     t_lag   = st.number_input("Días a emergencia del cultivo", 0, 60, 7)
-    t_close = st.number_input("Días a cierre de entresurco", 10, 120, 80)
+    t_close = st.number_input("Días a cierre de entresurco", 10, 120, 90)
     cov_max = st.number_input("Cobertura máxima (%)", 10, 100, 80)
     lai_max = st.number_input("LAI máximo", 0.0, 8.0, 3.0)
     k_beer  = st.number_input("k (Beer–Lambert)", 0.1, 1.2, 0.6)
